@@ -1,1 +1,1 @@
-"""Performance benchmarks for KnowledgeBeast."""
+"""Performance tests for KnowledgeBeast async/parallel optimizations."""

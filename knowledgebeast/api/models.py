@@ -21,7 +21,9 @@ class QueryRequest(BaseModel):
         json_schema_extra={
             "example": {
                 "query": "How do I use librosa for audio analysis?",
-                "use_cache": True
+                "use_cache": True,
+                "limit": 10,
+                "offset": 0
             }
         }
     )
@@ -37,6 +39,36 @@ class QueryRequest(BaseModel):
         default=True,
         description="Whether to use cached results if available"
     )
+    limit: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Maximum number of results to return (1-100)"
+    )
+    offset: int = Field(
+        default=0,
+        ge=0,
+        description="Number of results to skip for pagination"
+    )
+
+    @field_validator('query')
+    @classmethod
+    def sanitize_query(cls, v: str) -> str:
+        """Sanitize query string to prevent injection attacks."""
+        # Remove potentially dangerous characters
+        dangerous_chars = ['<', '>', ';', '&', '|', '$', '`', '\n', '\r']
+        for char in dangerous_chars:
+            if char in v:
+                raise ValueError(f"Query contains invalid character: {char}")
+
+        # Strip whitespace
+        v = v.strip()
+
+        # Ensure not empty after stripping
+        if not v:
+            raise ValueError("Query cannot be empty or only whitespace")
+
+        return v
 
     @field_validator('query')
     @classmethod
