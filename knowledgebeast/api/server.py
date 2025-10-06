@@ -10,7 +10,7 @@ def start_server(config, host: str = 'localhost', port: int = 5000, debug: bool 
     except ImportError:
         raise ImportError("Flask is required for the API server. Install with: pip install flask")
 
-    from knowledgebeast.core.knowledge_base import KnowledgeBase
+    from knowledgebeast.core.engine import KnowledgeBase
 
     app = Flask(__name__)
     kb = KnowledgeBase.from_config(config)

@@ -36,7 +36,7 @@ from knowledgebeast.api.middleware import (
     TimingMiddleware,
 )
 from knowledgebeast.api.models import ErrorResponse
-from knowledgebeast.api.routes import cleanup_heartbeat, get_kb_instance, router
+from knowledgebeast.api.routes import cleanup_executor, cleanup_heartbeat, get_kb_instance, router
 
 # Setup logging
 logging.basicConfig(
@@ -134,6 +134,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             logger.info("Heartbeat cleanup completed")
         except Exception as e:
             logger.error(f"Error during heartbeat cleanup: {e}")
+
+        # Cleanup thread pool executor
+        try:
+            cleanup_executor()
+            logger.info("Executor cleanup completed")
+        except Exception as e:
+            logger.error(f"Error during executor cleanup: {e}")
 
         # Cleanup KB instance if exists
         try:
