@@ -182,7 +182,10 @@ def reset_environment(monkeypatch):
     Args:
         monkeypatch: Pytest monkeypatch fixture
     """
-    # Clear any KB_ environment variables
+    # Set test API key for authentication
+    monkeypatch.setenv('KB_API_KEY', 'test-api-key-12345')
+
+    # Clear any other KB_ environment variables
     env_vars = [
         'KB_KNOWLEDGE_DIRS',
         'KB_CACHE_FILE',
