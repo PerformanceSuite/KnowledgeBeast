@@ -62,14 +62,12 @@ class KnowledgeBaseHeartbeat:
         """Start background heartbeat thread."""
         if self.running:
             logger.warning("Heartbeat already running")
-            print("⚠️  Heartbeat already running")
             return
 
         self.running = True
         self.thread = threading.Thread(target=self._heartbeat_loop, daemon=True, name="KB-Heartbeat")
         self.thread.start()
         logger.info(f"Knowledge base heartbeat started (interval={self.interval}s)")
-        print(f"💓 Knowledge base heartbeat started (every {self.interval}s)")
 
     def stop(self, timeout: float = 5.0) -> None:
         """
@@ -84,7 +82,7 @@ class KnowledgeBaseHeartbeat:
         self.running = False
         if self.thread:
             self.thread.join(timeout=timeout)
-        print(f"💓 Heartbeat stopped (executed {self.heartbeat_count} times)")
+        logger.info(f"Heartbeat stopped (executed {self.heartbeat_count} times)")
 
     def _heartbeat_loop(self) -> None:
         """Background heartbeat loop with error handling."""
@@ -98,7 +96,7 @@ class KnowledgeBaseHeartbeat:
 
                 # 1. Check for stale cache
                 if self._is_cache_stale():
-                    print("🔄 Heartbeat: Rebuilding stale cache...")
+                    logger.info("Heartbeat: Rebuilding stale cache...")
                     self.kb.ingest_all()
 
                 # 2. Execute warming query to keep index hot
@@ -108,7 +106,7 @@ class KnowledgeBaseHeartbeat:
                 self._log_health()
 
             except Exception as e:
-                print(f"❌ Heartbeat error: {e}")
+                logger.error(f"Heartbeat error: {e}", exc_info=True)
                 # Continue running despite errors
 
     def _is_cache_stale(self) -> bool:
@@ -141,7 +139,7 @@ class KnowledgeBaseHeartbeat:
             return False
 
         except Exception as e:
-            print(f"⚠️  Error checking cache staleness: {e}")
+            logger.warning(f"Error checking cache staleness: {e}")
             return False
 
     def _warm_query(self) -> None:
@@ -160,19 +158,19 @@ class KnowledgeBaseHeartbeat:
             query = random.choice(queries)
             self.kb.query(query, use_cache=True)
         except Exception as e:
-            print(f"⚠️  Warming query error: {e}")
+            logger.warning(f"Warming query error: {e}")
 
     def _log_health(self) -> None:
         """Log KB health metrics."""
         try:
             stats = self.kb.get_stats()
-            print(f"💓 KB Health #{self.heartbeat_count}: "
-                  f"{stats['documents']} docs, "
-                  f"{stats['total_queries']} queries, "
-                  f"{stats['cache_hit_rate']} hit rate, "
-                  f"last access {stats['last_access_age']}")
+            logger.info(f"KB Health #{self.heartbeat_count}: "
+                       f"{stats['documents']} docs, "
+                       f"{stats['total_queries']} queries, "
+                       f"{stats['cache_hit_rate']} hit rate, "
+                       f"last access {stats['last_access_age']}")
         except Exception as e:
-            print(f"⚠️  Health logging error: {e}")
+            logger.warning(f"Health logging error: {e}")
 
     def is_running(self) -> bool:
         """

@@ -93,6 +93,13 @@ class KnowledgeBeastConfig:
 
     def print_config(self) -> None:
         """Print current configuration."""
+        import logging
+        logger = logging.getLogger(__name__)
+
+        logger.info(f"KnowledgeBeast Configuration: dirs={len(self.knowledge_dirs)}, "
+                   f"cache={self.cache_file}, max_cache={self.max_cache_size}, "
+                   f"heartbeat={self.heartbeat_interval}s, auto_warm={self.auto_warm}")
+
         if not self.verbose:
             return
 
