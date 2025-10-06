@@ -7,6 +7,7 @@ A production-ready knowledge management system with RAG (Retrieval-Augmented Gen
 
 ## Features
 
+- **🎨 Web UI**: Beautiful, responsive web interface at `/ui`
 - **Document Ingestion**: Support for multiple document formats via Docling
 - **Vector Search**: Semantic search using sentence-transformers and ChromaDB
 - **Intelligent Caching**: LRU cache for query results with configurable size
@@ -128,13 +129,24 @@ knowledgebeast clear --data-dir ./data
 knowledgebeast serve --host 0.0.0.0 --port 8000
 ```
 
-### REST API
+### Web UI
 
 Start the server:
 
 ```bash
 knowledgebeast serve
 ```
+
+Then visit **http://localhost:8000/ui** for the beautiful web interface.
+
+Features:
+- 🔍 **Real-time Search**: Interactive semantic search with live results
+- 📊 **Statistics Dashboard**: Live metrics and performance data
+- 💚 **Health Monitoring**: Auto-refreshing system status
+- ⚡ **Cache Management**: Warm KB and clear cache with one click
+- 📱 **Responsive Design**: Works on desktop, tablet, and mobile
+
+### REST API
 
 Or with uvicorn directly:
 
@@ -144,9 +156,14 @@ uvicorn knowledgebeast.api.app:app --host 0.0.0.0 --port 8000
 
 API endpoints:
 
+- `GET /` - API information and links
+- `GET /ui` - Web UI (static files)
 - `GET /api/v1/health` - Health check
-- `POST /api/v1/ingest` - Ingest a document
 - `POST /api/v1/query` - Query the knowledge base
+- `GET /api/v1/stats` - Get statistics
+- `POST /api/v1/ingest` - Ingest a document
+- `POST /api/v1/warm` - Warm knowledge base
+- `POST /api/v1/cache/clear` - Clear query cache
 - `GET /api/v1/stats` - Get statistics
 - `DELETE /api/v1/clear` - Clear all documents
 
