@@ -168,10 +168,44 @@ class KnowledgeBase:
 
                 if not cache_is_stale:
                     # Cache is valid, use it
-                    with open(cache_path, 'rb') as f:
-                        cached_data = pickle.load(f)
+                    cached_data = None
+                    migrated = False
+
+                    # Try JSON first (secure format)
+                    try:
+                        with open(cache_path, 'r', encoding='utf-8') as f:
+                            cached_data = json.load(f)
+                            logger.info("Loaded cache from JSON format")
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        # Legacy pickle file - migrate it
+                        logger.warning("Detected legacy pickle cache, migrating to JSON")
+                        if self.config.verbose:
+                            print("🔄 Migrating legacy cache to secure JSON format...")
+
+                        try:
+                            with open(cache_path, 'rb') as f:
+                                cached_data = pickle.load(f)
+                            migrated = True
+                        except Exception as pickle_error:
+                            logger.error(f"Failed to load legacy pickle cache: {pickle_error}")
+                            raise
+
+                    if cached_data:
                         self.documents = cached_data['documents']
                         self.index = cached_data['index']
+
+                        # If we migrated from pickle, save as JSON
+                        if migrated:
+                            try:
+                                with open(cache_path, 'w', encoding='utf-8') as f:
+                                    json.dump(cached_data, f, indent=2)
+                                logger.info("Successfully migrated cache to JSON format")
+                                if self.config.verbose:
+                                    print("✅ Cache migrated to JSON format\n")
+                            except Exception as save_error:
+                                logger.error(f"Failed to save migrated cache: {save_error}")
+                                if self.config.verbose:
+                                    print(f"⚠️  Failed to save migrated cache: {save_error}\n")
 
                     self.stats['total_documents'] = len(self.documents)
                     self.stats['total_terms'] = len(self.index)
@@ -186,6 +220,7 @@ class KnowledgeBase:
                         print("   Rebuilding index...\n")
 
             except Exception as e:
+                logger.error(f"Cache validation failed: {e}", exc_info=True)
                 if self.config.verbose:
                     print(f"⚠️  Cache validation failed: {e}, re-ingesting...")
 
@@ -220,17 +255,31 @@ class KnowledgeBase:
                     return True
 
             # Check if file count changed
-            with open(cache_path, 'rb') as f:
-                cached_data = pickle.load(f)
-                if len(cached_data['documents']) != len(all_md_files):
-                    if self.config.verbose:
-                        print(f"🔄 Cache is stale (file count changed: "
-                              f"{len(cached_data['documents'])} → {len(all_md_files)})")
+            cached_data = None
+
+            # Try JSON first (secure format)
+            try:
+                with open(cache_path, 'r', encoding='utf-8') as f:
+                    cached_data = json.load(f)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                # Legacy pickle file
+                try:
+                    with open(cache_path, 'rb') as f:
+                        cached_data = pickle.load(f)
+                except Exception as pickle_error:
+                    logger.error(f"Failed to load cache for staleness check: {pickle_error}")
                     return True
+
+            if cached_data and len(cached_data['documents']) != len(all_md_files):
+                if self.config.verbose:
+                    print(f"🔄 Cache is stale (file count changed: "
+                          f"{len(cached_data['documents'])} → {len(all_md_files)})")
+                return True
 
             return False
 
         except Exception as e:
+            logger.error(f"Cache staleness check failed: {e}", exc_info=True)
             if self.config.verbose:
                 print(f"⚠️  Cache staleness check failed: {e}")
             return True
@@ -308,13 +357,16 @@ class KnowledgeBase:
             print(f"   - {len(self.index)} unique terms\n")
 
     def _save_cache(self, cache_path: Path) -> None:
-        """Save index to cache file."""
+        """Save index to cache file using secure JSON format."""
         try:
-            with open(cache_path, 'wb') as f:
-                pickle.dump({'documents': self.documents, 'index': self.index}, f)
+            cache_data = {'documents': self.documents, 'index': self.index}
+            with open(cache_path, 'w', encoding='utf-8') as f:
+                json.dump(cache_data, f, indent=2, ensure_ascii=False)
+            logger.info(f"Saved cache to {cache_path}")
             if self.config.verbose:
                 print(f"💾 Cached knowledge base to {cache_path}\n")
         except Exception as e:
+            logger.error(f"Failed to save cache: {e}", exc_info=True)
             if self.config.verbose:
                 print(f"⚠️  Failed to cache: {e}\n")
 
