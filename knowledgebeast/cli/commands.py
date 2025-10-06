@@ -2,6 +2,8 @@
 
 import os
 import sys
+import signal
+import logging
 import platform
 from pathlib import Path
 from typing import Optional
@@ -18,6 +20,8 @@ from knowledgebeast import __version__, __description__
 from knowledgebeast.core.config import KnowledgeBeastConfig
 from knowledgebeast.core.engine import KnowledgeBase
 from knowledgebeast.utils.logging import setup_logging
+
+logger = logging.getLogger(__name__)
 
 console = Console()
 
@@ -91,25 +95,31 @@ def init(ctx: click.Context, path: str, name: Optional[str]) -> None:
 @click.pass_context
 def ingest(ctx: click.Context, file_path: Path, data_dir: Path) -> None:
     """Ingest a document into the knowledge base."""
-    config = KnowledgeBeastConfig(data_dir=data_dir)
+    try:
+        config = KnowledgeBeastConfig(data_dir=data_dir)
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        console=console,
-    ) as progress:
-        task = progress.add_task(f"Ingesting {file_path.name}...", total=100)
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task(f"Ingesting {file_path.name}...", total=100)
 
-        with KnowledgeBase(config) as kb:
-            try:
+            with KnowledgeBase(config) as kb:
                 chunks = kb.ingest_document(file_path)
                 progress.update(task, completed=100)
                 console.print(f"[green]✓[/green] Successfully ingested {chunks} chunks from {file_path.name}")
-            except Exception as e:
-                console.print(f"[bold red]Error:[/bold red] {e}")
-                raise click.Abort()
+
+    except KeyboardInterrupt:
+        console.print("\n[yellow]⚠️  Operation cancelled by user[/yellow]")
+        logger.warning("Ingest operation cancelled by KeyboardInterrupt")
+        raise click.Abort()
+    except Exception as e:
+        console.print(f"[red]❌ Error: {e}[/red]")
+        logger.error(f"Ingest command failed: {e}", exc_info=True)
+        raise click.Abort()
 
 
 @cli.command()
@@ -124,49 +134,59 @@ def ingest(ctx: click.Context, file_path: Path, data_dir: Path) -> None:
 @click.pass_context
 def add(ctx: click.Context, file_or_dir: Path, recursive: bool, data_dir: Path) -> None:
     """Add documents to the knowledge base (alias for ingest with directory support)."""
-    config = KnowledgeBeastConfig(data_dir=data_dir)
+    try:
+        config = KnowledgeBeastConfig(data_dir=data_dir)
 
-    # Collect files
-    files_to_add = []
-    if file_or_dir.is_file():
-        files_to_add.append(file_or_dir)
-    elif file_or_dir.is_dir():
-        pattern = '**/*.md' if recursive else '*.md'
-        files_to_add.extend(file_or_dir.glob(pattern))
+        # Collect files
+        files_to_add = []
+        if file_or_dir.is_file():
+            files_to_add.append(file_or_dir)
+        elif file_or_dir.is_dir():
+            pattern = '**/*.md' if recursive else '*.md'
+            files_to_add.extend(file_or_dir.glob(pattern))
 
-    if not files_to_add:
-        console.print(f"[yellow]No markdown files found in {file_or_dir}[/yellow]")
-        return
+        if not files_to_add:
+            console.print(f"[yellow]No markdown files found in {file_or_dir}[/yellow]")
+            return
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        console=console,
-    ) as progress:
-        task = progress.add_task("Adding documents...", total=len(files_to_add))
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Adding documents...", total=len(files_to_add))
 
-        added_count = 0
-        failed_count = 0
+            added_count = 0
+            failed_count = 0
 
-        with KnowledgeBase(config) as kb:
-            for file_path in files_to_add:
-                try:
-                    progress.update(task, description=f"Processing {file_path.name}...")
-                    kb.ingest_document(file_path)
-                    added_count += 1
-                    progress.update(task, advance=1)
-                except Exception as e:
-                    console.print(f"[red]Failed to add {file_path.name}: {e}[/red]")
-                    failed_count += 1
-                    progress.update(task, advance=1)
+            with KnowledgeBase(config) as kb:
+                for file_path in files_to_add:
+                    try:
+                        progress.update(task, description=f"Processing {file_path.name}...")
+                        kb.ingest_document(file_path)
+                        added_count += 1
+                        progress.update(task, advance=1)
+                    except Exception as e:
+                        console.print(f"[red]Failed to add {file_path.name}: {e}[/red]")
+                        failed_count += 1
+                        progress.update(task, advance=1)
 
-    console.print()
-    if added_count > 0:
-        console.print(f"[green]✓[/green] Added {added_count} document(s)")
-    if failed_count > 0:
-        console.print(f"[yellow]⚠[/yellow] {failed_count} document(s) failed")
+        console.print()
+        if added_count > 0:
+            console.print(f"[green]✓[/green] Added {added_count} document(s)")
+        if failed_count > 0:
+            console.print(f"[yellow]⚠[/yellow] {failed_count} document(s) failed")
+
+    except KeyboardInterrupt:
+        console.print("\n[yellow]⚠️  Operation cancelled by user[/yellow]")
+        logger.warning("Add operation cancelled by KeyboardInterrupt")
+        raise click.Abort()
+    except Exception as e:
+        console.print(f"[red]❌ Error: {e}[/red]")
+        logger.error(f"Add command failed: {e}", exc_info=True)
+        raise click.Abort()
 
 
 @cli.command()
@@ -327,23 +347,33 @@ def clear_cache(ctx: click.Context, data_dir: Path, yes: bool) -> None:
 @click.pass_context
 def warm(ctx: click.Context, data_dir: Path) -> None:
     """Manually trigger cache warming."""
-    config = KnowledgeBeastConfig(data_dir=data_dir)
+    try:
+        config = KnowledgeBeastConfig(data_dir=data_dir)
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        console=console,
-    ) as progress:
-        task = progress.add_task("Warming cache...", total=100)
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Warming cache...", total=100)
 
-        with KnowledgeBase(config) as kb:
-            # Trigger warming
-            kb.warm_cache()
-            progress.update(task, completed=100)
+            with KnowledgeBase(config) as kb:
+                # Trigger warming
+                kb.warm_cache()
+                progress.update(task, completed=100)
 
-    console.print("[green]✓[/green] Cache warming completed")
+        console.print("[green]✓[/green] Cache warming completed")
+
+    except KeyboardInterrupt:
+        console.print("\n[yellow]⚠️  Operation cancelled by user[/yellow]")
+        logger.warning("Warm operation cancelled by KeyboardInterrupt")
+        raise click.Abort()
+    except Exception as e:
+        console.print(f"[red]❌ Error: {e}[/red]")
+        logger.error(f"Warm command failed: {e}", exc_info=True)
+        raise click.Abort()
 
 
 @cli.command()
@@ -484,21 +514,42 @@ def version(ctx: click.Context) -> None:
 @click.pass_context
 def serve(ctx: click.Context, host: str, port: int, reload: bool) -> None:
     """Start the FastAPI server."""
+    def signal_handler(sig, frame):
+        """Handle shutdown signals gracefully."""
+        console.print("\n[yellow]⚠️  Shutting down server...[/yellow]")
+        logger.info("Server shutdown initiated by signal")
+        sys.exit(0)
+
+    # Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
     try:
         import uvicorn
     except ImportError:
-        click.echo("Error: uvicorn is required to run the server", err=True)
-        click.echo("Install it with: pip install uvicorn", err=True)
+        console.print("[red]❌ Error: uvicorn is required to run the server[/red]")
+        console.print("[dim]Install it with: pip install uvicorn[/dim]")
+        logger.error("uvicorn not installed")
         raise click.Abort()
-    
-    click.echo(f"Starting KnowledgeBeast API server on {host}:{port}")
-    
-    uvicorn.run(
-        "knowledgebeast.api.app:app",
-        host=host,
-        port=port,
-        reload=reload
-    )
+
+    try:
+        console.print(f"[cyan]Starting KnowledgeBeast API server on {host}:{port}[/cyan]")
+        logger.info(f"Starting server on {host}:{port}")
+
+        uvicorn.run(
+            "knowledgebeast.api.app:app",
+            host=host,
+            port=port,
+            reload=reload
+        )
+    except KeyboardInterrupt:
+        console.print("\n[yellow]⚠️  Server stopped by user[/yellow]")
+        logger.warning("Server stopped by KeyboardInterrupt")
+        raise click.Abort()
+    except Exception as e:
+        console.print(f"[red]❌ Error: {e}[/red]")
+        logger.error(f"Serve command failed: {e}", exc_info=True)
+        raise click.Abort()
 
 
 if __name__ == "__main__":

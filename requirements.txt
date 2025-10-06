@@ -7,6 +7,7 @@ chromadb>=0.4.0
 sentence-transformers>=2.2.0
 pydantic>=2.0.0
 uvicorn[standard]>=0.27.0
+tenacity>=8.2.0  # Retry logic for robust I/O operations
 
 # API dependencies
 slowapi>=0.1.9  # Rate limiting for FastAPI

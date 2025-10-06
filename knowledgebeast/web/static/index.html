@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KnowledgeBeast - RAG Knowledge Base</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            color: white;
+            margin-bottom: 40px;
+        }
+
+        header h1 {
+            font-size: 3em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+
+        header p {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+
+        .health-status {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .health-indicator {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status-dot {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        .status-dot.healthy { background: #10b981; }
+        .status-dot.degraded { background: #f59e0b; }
+        .status-dot.unhealthy { background: #ef4444; }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+
+        .search-box {
+            margin-bottom: 20px;
+        }
+
+        .search-box input {
+            width: 100%;
+            padding: 15px 20px;
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            font-size: 1.1em;
+            transition: border-color 0.3s;
+        }
+
+        .search-box input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .search-options {
+            display: flex;
+            gap: 15px;
+            margin-top: 10px;
+            align-items: center;
+        }
+
+        .search-options label {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            cursor: pointer;
+        }
+
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 8px;
+            font-size: 1em;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            font-weight: 600;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        button:disabled {
+            background: #9ca3af;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .results {
+            margin-top: 30px;
+        }
+
+        .result-item {
+            background: #f9fafb;
+            border-left: 4px solid #667eea;
+            padding: 20px;
+            margin-bottom: 15px;
+            border-radius: 8px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .result-item:hover {
+            transform: translateX(5px);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .result-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .result-title {
+            font-weight: 600;
+            font-size: 1.1em;
+            color: #1f2937;
+        }
+
+        .result-score {
+            background: #667eea;
+            color: white;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.9em;
+        }
+
+        .result-content {
+            color: #4b5563;
+            line-height: 1.6;
+            margin-top: 10px;
+        }
+
+        .result-meta {
+            margin-top: 10px;
+            font-size: 0.9em;
+            color: #6b7280;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+        }
+
+        .stat-card {
+            background: linear-gradient(135deg, #f9fafb 0%, #ffffff 100%);
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #e5e7eb;
+        }
+
+        .stat-value {
+            font-size: 2em;
+            font-weight: bold;
+            color: #667eea;
+            margin-bottom: 5px;
+        }
+
+        .stat-label {
+            color: #6b7280;
+            font-size: 0.9em;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #6b7280;
+        }
+
+        .spinner {
+            border: 3px solid #f3f4f6;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .error {
+            background: #fee2e2;
+            border-left: 4px solid #ef4444;
+            color: #991b1b;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 15px;
+        }
+
+        .no-results {
+            text-align: center;
+            padding: 40px;
+            color: #6b7280;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .tab {
+            background: transparent;
+            color: #6b7280;
+            border: 2px solid #e5e7eb;
+            padding: 10px 20px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .tab.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-color: transparent;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🦁 KnowledgeBeast</h1>
+            <p>High-Performance RAG Knowledge Base</p>
+        </header>
+
+        <div class="health-status" id="healthStatus">
+            <div class="health-indicator">
+                <div class="status-dot" id="statusDot"></div>
+                <span id="statusText">Loading...</span>
+            </div>
+            <span id="versionText"></span>
+        </div>
+
+        <div class="tabs">
+            <button class="tab active" onclick="switchTab('search')">Search</button>
+            <button class="tab" onclick="switchTab('stats')">Statistics</button>
+        </div>
+
+        <div id="searchTab" class="tab-content active">
+            <div class="card">
+                <div class="search-box">
+                    <input
+                        type="text"
+                        id="searchInput"
+                        placeholder="Search knowledge base..."
+                        onkeypress="handleKeyPress(event)"
+                    >
+                    <div class="search-options">
+                        <label>
+                            <input type="checkbox" id="useCacheCheckbox" checked>
+                            Use Cache
+                        </label>
+                        <label>
+                            Results:
+                            <select id="numResults">
+                                <option value="5">5</option>
+                                <option value="10" selected>10</option>
+                                <option value="20">20</option>
+                                <option value="50">50</option>
+                            </select>
+                        </label>
+                        <button onclick="search()" id="searchButton">
+                            Search
+                        </button>
+                    </div>
+                </div>
+
+                <div id="results" class="results"></div>
+            </div>
+        </div>
+
+        <div id="statsTab" class="tab-content">
+            <div class="card">
+                <h2 style="margin-bottom: 20px;">Knowledge Base Statistics</h2>
+                <div class="stats-grid" id="statsGrid"></div>
+                <div class="action-buttons">
+                    <button onclick="warmKB()">🔥 Warm Knowledge Base</button>
+                    <button onclick="clearCache()">🗑️ Clear Cache</button>
+                    <button onclick="refreshStats()">🔄 Refresh Stats</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '/api/v1';
+        let currentTab = 'search';
+
+        // Initialize on load
+        document.addEventListener('DOMContentLoaded', () => {
+            checkHealth();
+            refreshStats();
+            setInterval(checkHealth, 30000); // Update health every 30s
+        });
+
+        function switchTab(tab) {
+            currentTab = tab;
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+
+            event.target.classList.add('active');
+            document.getElementById(`${tab}Tab`).classList.add('active');
+
+            if (tab === 'stats') {
+                refreshStats();
+            }
+        }
+
+        async function checkHealth() {
+            try {
+                const response = await fetch(`${API_BASE}/health`);
+                const data = await response.json();
+
+                const statusDot = document.getElementById('statusDot');
+                const statusText = document.getElementById('statusText');
+                const versionText = document.getElementById('versionText');
+
+                statusDot.className = `status-dot ${data.status}`;
+                statusText.textContent = `Status: ${data.status.toUpperCase()}`;
+                versionText.textContent = `v${data.version}`;
+            } catch (error) {
+                console.error('Health check failed:', error);
+                document.getElementById('statusDot').className = 'status-dot unhealthy';
+                document.getElementById('statusText').textContent = 'Status: ERROR';
+            }
+        }
+
+        async function search() {
+            const query = document.getElementById('searchInput').value.trim();
+            if (!query) {
+                alert('Please enter a search query');
+                return;
+            }
+
+            const resultsDiv = document.getElementById('results');
+            const searchButton = document.getElementById('searchButton');
+
+            searchButton.disabled = true;
+            resultsDiv.innerHTML = '<div class="loading"><div class="spinner"></div>Searching...</div>';
+
+            try {
+                const useCache = document.getElementById('useCacheCheckbox').checked;
+                const numResults = parseInt(document.getElementById('numResults').value);
+
+                const response = await fetch(`${API_BASE}/query`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        query: query,
+                        use_cache: useCache,
+                        n_results: numResults
+                    })
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Search failed');
+                }
+
+                const data = await response.json();
+                displayResults(data.results, data.query_time);
+            } catch (error) {
+                resultsDiv.innerHTML = `<div class="error">Error: ${error.message}</div>`;
+            } finally {
+                searchButton.disabled = false;
+            }
+        }
+
+        function displayResults(results, queryTime) {
+            const resultsDiv = document.getElementById('results');
+
+            if (results.length === 0) {
+                resultsDiv.innerHTML = '<div class="no-results">No results found</div>';
+                return;
+            }
+
+            const html = `
+                <div style="margin-bottom: 20px; color: #6b7280;">
+                    Found ${results.length} results in ${queryTime}
+                </div>
+                ${results.map(result => `
+                    <div class="result-item">
+                        <div class="result-header">
+                            <div class="result-title">${escapeHtml(result.name)}</div>
+                            <div class="result-score">Score: ${result.score.toFixed(2)}</div>
+                        </div>
+                        <div class="result-content">
+                            ${escapeHtml(result.content.substring(0, 300))}${result.content.length > 300 ? '...' : ''}
+                        </div>
+                        <div class="result-meta">
+                            📁 ${escapeHtml(result.path)} | 📚 ${escapeHtml(result.kb_dir)}
+                        </div>
+                    </div>
+                `).join('')}
+            `;
+
+            resultsDiv.innerHTML = html;
+        }
+
+        async function refreshStats() {
+            const statsGrid = document.getElementById('statsGrid');
+            statsGrid.innerHTML = '<div class="loading"><div class="spinner"></div>Loading statistics...</div>';
+
+            try {
+                const response = await fetch(`${API_BASE}/stats`);
+                const data = await response.json();
+
+                const stats = [
+                    { label: 'Documents', value: data.documents },
+                    { label: 'Unique Terms', value: data.terms },
+                    { label: 'Total Queries', value: data.total_queries },
+                    { label: 'Cache Hit Rate', value: data.cache_hit_rate },
+                    { label: 'Cached Queries', value: data.cached_queries },
+                    { label: 'Cache Hits', value: data.cache_hits },
+                    { label: 'Cache Misses', value: data.cache_misses },
+                    { label: 'Last Access', value: data.last_access_age }
+                ];
+
+                statsGrid.innerHTML = stats.map(stat => `
+                    <div class="stat-card">
+                        <div class="stat-value">${stat.value}</div>
+                        <div class="stat-label">${stat.label}</div>
+                    </div>
+                `).join('');
+            } catch (error) {
+                statsGrid.innerHTML = `<div class="error">Error loading statistics: ${error.message}</div>`;
+            }
+        }
+
+        async function warmKB() {
+            if (!confirm('Warm the knowledge base? This will execute several queries.')) return;
+
+            try {
+                const response = await fetch(`${API_BASE}/warm`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ rebuild: false })
+                });
+
+                if (!response.ok) throw new Error('Warming failed');
+
+                const data = await response.json();
+                alert(`Knowledge base warmed successfully!\n\nQueries executed: ${data.queries_executed}\nTime: ${data.time}`);
+                refreshStats();
+            } catch (error) {
+                alert(`Error: ${error.message}`);
+            }
+        }
+
+        async function clearCache() {
+            if (!confirm('Clear the query cache? This cannot be undone.')) return;
+
+            try {
+                const response = await fetch(`${API_BASE}/cache/clear`, {
+                    method: 'POST'
+                });
+
+                if (!response.ok) throw new Error('Cache clear failed');
+
+                alert('Cache cleared successfully!');
+                refreshStats();
+            } catch (error) {
+                alert(`Error: ${error.message}`);
+            }
+        }
+
+        function handleKeyPress(event) {
+            if (event.key === 'Enter') {
+                search();
+            }
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>
