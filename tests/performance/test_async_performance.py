@@ -59,7 +59,7 @@ def knowledge_base(kb_config):
 async def test_async_query_endpoint_non_blocking():
     """Test 1: Verify query endpoint doesn't block event loop."""
     from fastapi.testclient import TestClient
-    from knowledgebeast.api.main import app
+    from knowledgebeast.api.app import app
 
     # This test verifies that multiple concurrent requests can be handled
     # If blocking occurred, requests would be serialized
@@ -140,7 +140,7 @@ async def test_async_warm_endpoint_non_blocking():
 async def test_concurrent_query_requests_throughput():
     """Test 4: Test 50 concurrent query API requests for throughput."""
     from fastapi.testclient import TestClient
-    from knowledgebeast.api.main import app
+    from knowledgebeast.api.app import app
 
     async def query_request():
         with TestClient(app) as client:
@@ -174,7 +174,7 @@ async def test_concurrent_query_requests_throughput():
 async def test_concurrent_mixed_endpoint_requests():
     """Test 5: Test concurrent requests to different endpoints."""
     from fastapi.testclient import TestClient
-    from knowledgebeast.api.main import app
+    from knowledgebeast.api.app import app
 
     async def health_request():
         with TestClient(app) as client:
@@ -209,7 +209,7 @@ async def test_concurrent_mixed_endpoint_requests():
 async def test_api_response_time_under_load():
     """Test 6: Verify individual response times remain low under concurrent load."""
     from fastapi.testclient import TestClient
-    from knowledgebeast.api.main import app
+    from knowledgebeast.api.app import app
 
     response_times = []
 
@@ -516,7 +516,7 @@ async def test_cache_performance_improvement():
 async def test_throughput_improvement_measurement():
     """Test 18: Measure overall API throughput improvement."""
     from fastapi.testclient import TestClient
-    from knowledgebeast.api.main import app
+    from knowledgebeast.api.app import app
 
     # Simulate load
     request_count = 100
