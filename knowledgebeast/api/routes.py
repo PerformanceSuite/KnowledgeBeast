@@ -15,8 +15,10 @@ Provides 12 production-ready endpoints:
 12. GET /collections/{name} - Get collection info
 """
 
+import asyncio
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -56,6 +58,9 @@ router = APIRouter()
 
 # Initialize rate limiter
 limiter = Limiter(key_func=get_remote_address)
+
+# Thread pool executor for blocking operations
+_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="kb-worker")
 
 # Global instances (singleton pattern)
 _kb_instance: Optional[KnowledgeBase] = None
@@ -106,6 +111,16 @@ def cleanup_heartbeat() -> None:
         logger.info("Stopping heartbeat...")
         _heartbeat_instance.stop()
         _heartbeat_instance = None
+
+
+def cleanup_executor() -> None:
+    """Cleanup thread pool executor."""
+    global _executor
+
+    if _executor:
+        logger.info("Shutting down thread pool executor...")
+        _executor.shutdown(wait=True, cancel_futures=False)
+        logger.info("Thread pool executor shutdown complete")
 
 
 # ============================================================================
@@ -226,7 +241,10 @@ async def get_stats(request: Request, api_key: str = Depends(get_api_key)) -> St
     """
     try:
         kb = get_kb_instance()
-        stats = kb.get_stats()
+
+        # Execute in thread pool (non-blocking)
+        loop = asyncio.get_event_loop()
+        stats = await loop.run_in_executor(_executor, kb.get_stats)
 
         return StatsResponse(**stats)
 
@@ -272,8 +290,14 @@ async def query_knowledge_base(
         cache_key = kb._generate_cache_key(query_request.query)
         was_cached = cache_key in kb.query_cache._cache
 
-        # Execute query
-        results = kb.query(query_request.query, use_cache=query_request.use_cache)
+        # Execute query in thread pool (non-blocking)
+        loop = asyncio.get_event_loop()
+        results = await loop.run_in_executor(
+            _executor,
+            kb.query,
+            query_request.query,
+            query_request.use_cache
+        )
 
         # Convert results to QueryResult models
         query_results = [
@@ -354,8 +378,9 @@ async def ingest_document(
             "Consider batch ingestion for better performance."
         )
 
-        # Trigger rebuild to include new file
-        kb.rebuild_index()
+        # Trigger rebuild to include new file (execute in thread pool)
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(_executor, kb.rebuild_index)
 
         # Generate doc_id (similar to how engine does it)
         doc_id = str(file_path)
@@ -412,9 +437,10 @@ async def batch_ingest_documents(
             else:
                 successful += 1
 
-        # Rebuild index to include all files
+        # Rebuild index to include all files (execute in thread pool)
         if successful > 0:
-            kb.rebuild_index()
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(_executor, kb.rebuild_index)
 
         total_files = len(batch_request.file_paths)
         failed = len(failed_files)
@@ -468,12 +494,14 @@ async def warm_knowledge_base(
 
         start_time = time.time()
 
-        # Rebuild if requested
-        if warm_request.force_rebuild:
-            kb.rebuild_index()
+        loop = asyncio.get_event_loop()
 
-        # Warm up
-        kb.warm_up()
+        # Rebuild if requested (execute in thread pool)
+        if warm_request.force_rebuild:
+            await loop.run_in_executor(_executor, kb.rebuild_index)
+
+        # Warm up (execute in thread pool)
+        await loop.run_in_executor(_executor, kb.warm_up)
 
         warm_time = time.time() - start_time
 
