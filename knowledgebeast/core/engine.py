@@ -14,7 +14,6 @@ Features:
 - Enhanced error handling and recovery
 """
 
-from docling.document_converter import DocumentConverter
 from pathlib import Path
 import json
 import pickle
@@ -23,11 +22,60 @@ import hashlib
 import threading
 import logging
 from typing import Dict, List, Tuple, Optional, Callable
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from knowledgebeast.core.config import KnowledgeBeastConfig
 from knowledgebeast.core.cache import LRUCache
+from knowledgebeast.core.constants import (
+    MAX_RETRY_ATTEMPTS,
+    RETRY_MIN_WAIT_SECONDS,
+    RETRY_MAX_WAIT_SECONDS,
+    RETRY_MULTIPLIER,
+    CACHE_TEMP_SUFFIX,
+    JSON_INDENT,
+    ERR_EMPTY_SEARCH_TERMS
+)
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+# Graceful dependency degradation for docling
+try:
+    from docling.document_converter import DocumentConverter
+    DOCLING_AVAILABLE = True
+    logger.info("Docling document converter loaded successfully")
+except ImportError:
+    DOCLING_AVAILABLE = False
+    logger.warning("Docling not available, using fallback converter")
+
+    class FallbackConverter:
+        """Fallback converter for when docling is not available."""
+
+        def convert(self, path: Path):
+            """Simple markdown reader fallback.
+
+            Args:
+                path: Path to markdown file
+
+            Returns:
+                SimpleNamespace with document structure
+            """
+            from types import SimpleNamespace
+
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+
+                return SimpleNamespace(
+                    document=SimpleNamespace(
+                        name=path.name,
+                        export_to_markdown=lambda: content
+                    )
+                )
+            except Exception as e:
+                logger.error(f"Fallback converter failed for {path}: {e}")
+                raise
+
+    DocumentConverter = FallbackConverter
 
 
 class KnowledgeBase:
@@ -107,6 +155,7 @@ class KnowledgeBase:
             try:
                 self.progress_callback(message, current, total)
             except Exception as e:
+                logger.warning(f"Progress callback error: {e}")
                 if self.config.verbose:
                     print(f"⚠️  Progress callback error: {e}")
 
@@ -115,6 +164,7 @@ class KnowledgeBase:
         Pre-load and warm up the knowledge base.
         Executes common queries to populate cache and reduce first-query latency.
         """
+        logger.info("Warming up knowledge base...")
         if self.config.verbose:
             print("🔥 Warming up knowledge base...")
 
@@ -132,12 +182,14 @@ class KnowledgeBase:
                     self.query(query, use_cache=False)  # Populate cache
                     self.stats['warm_queries'] += 1
                 except Exception as e:
+                    logger.warning(f"Warming query failed '{query}': {e}")
                     if self.config.verbose:
                         print(f"⚠️  Warming query failed '{query}': {e}")
 
             elapsed = time.time() - start
             self.stats['last_warm_time'] = elapsed
 
+            logger.info(f"Knowledge base warmed in {elapsed:.2f}s - {len(self.documents)} documents, {len(self.index)} terms, {self.stats['warm_queries']} queries")
             if self.config.verbose:
                 print(f"✅ Knowledge base warmed in {elapsed:.2f}s")
                 print(f"   - {len(self.documents)} documents loaded")
@@ -145,6 +197,7 @@ class KnowledgeBase:
                 print(f"   - {self.stats['warm_queries']} warming queries executed\n")
 
         except Exception as e:
+            logger.error(f"Warming failed: {e}", exc_info=True)
             if self.config.verbose:
                 print(f"❌ Warming failed: {e}")
             raise
@@ -204,18 +257,18 @@ class KnowledgeBase:
                                     print("✅ Cache migrated to JSON format\n")
                             except Exception as save_error:
                                 logger.error(f"Failed to save migrated cache: {save_error}")
-                                if self.config.verbose:
-                                    print(f"⚠️  Failed to save migrated cache: {save_error}\n")
 
                     self.stats['total_documents'] = len(self.documents)
                     self.stats['total_terms'] = len(self.index)
 
+                    logger.info(f"Loaded knowledge base from cache - {len(self.documents)} documents, {len(self.index)} terms")
                     if self.config.verbose:
                         print("📚 Loaded knowledge base from cache (up-to-date)")
                         print(f"   - {len(self.documents)} documents indexed")
                         print(f"   - {len(self.index)} unique terms\n")
                     return
                 else:
+                    logger.info("Cache is stale, rebuilding index...")
                     if self.config.verbose:
                         print("   Rebuilding index...\n")
 
@@ -250,6 +303,7 @@ class KnowledgeBase:
             # Check if any file is newer than cache
             for md_file in all_md_files:
                 if md_file.stat().st_mtime > cache_mtime:
+                    logger.debug(f"Cache is stale (newer file: {md_file.name})")
                     if self.config.verbose:
                         print(f"🔄 Cache is stale (newer file: {md_file.name})")
                     return True
@@ -271,6 +325,7 @@ class KnowledgeBase:
                     return True
 
             if cached_data and len(cached_data['documents']) != len(all_md_files):
+                logger.debug(f"Cache is stale (file count changed: {len(cached_data['documents'])} → {len(all_md_files)})")
                 if self.config.verbose:
                     print(f"🔄 Cache is stale (file count changed: "
                           f"{len(cached_data['documents'])} → {len(all_md_files)})")
@@ -284,18 +339,38 @@ class KnowledgeBase:
                 print(f"⚠️  Cache staleness check failed: {e}")
             return True
 
+    @retry(
+        stop=stop_after_attempt(MAX_RETRY_ATTEMPTS),
+        wait=wait_exponential(multiplier=RETRY_MULTIPLIER, min=RETRY_MIN_WAIT_SECONDS, max=RETRY_MAX_WAIT_SECONDS),
+        retry=retry_if_exception_type((OSError, IOError)),
+        reraise=True
+    )
+    def _convert_document_with_retry(self, path: Path):
+        """Convert document with retry logic for I/O errors.
+
+        Args:
+            path: Path to document file
+
+        Returns:
+            Converted document result
+
+        Raises:
+            Exception: If conversion fails after retries
+        """
+        return self.converter.convert(path)
+
     def _build_index(self) -> None:
         """Build document index from all knowledge directories."""
+        logger.info("Ingesting knowledge base...")
         if self.config.verbose:
-            logger.info("📚 Ingesting knowledge base...")
             print("📚 Ingesting knowledge base...")
 
         # Collect all markdown files (can be done without lock - read-only)
         all_md_files = []
         for kb_dir in self.config.knowledge_dirs:
             if not kb_dir.exists():
+                logger.warning(f"Skipping non-existent directory: {kb_dir}")
                 if self.config.verbose:
-                    logger.warning(f"Skipping non-existent directory: {kb_dir}")
                     print(f"⚠️  Skipping non-existent directory: {kb_dir}")
                 continue
 
@@ -303,6 +378,7 @@ class KnowledgeBase:
             md_files = [f for f in md_files if not f.is_symlink()]
             all_md_files.extend([(kb_dir, f) for f in md_files])
 
+        logger.info(f"Found {len(all_md_files)} documents across {len(self.config.knowledge_dirs)} directories")
         if self.config.verbose:
             print(f"   Found {len(all_md_files)} documents across {len(self.config.knowledge_dirs)} directories")
 
@@ -315,7 +391,7 @@ class KnowledgeBase:
             self._report_progress(f"Ingesting {md_file.name}", i, len(all_md_files))
 
             try:
-                result = self.converter.convert(md_file)
+                result = self._convert_document_with_retry(md_file)
                 if result.document:
                     # Store document with relative path from its knowledge dir
                     doc_id = str(md_file.relative_to(kb_dir.parent))
@@ -334,8 +410,8 @@ class KnowledgeBase:
                             new_index[word] = []
                         new_index[word].append(doc_id)
 
+                    logger.debug(f"Ingested: {doc_id}")
                     if self.config.verbose:
-                        logger.info(f"Ingested: {doc_id}")
                         print(f"   ✅ Ingested: {doc_id}")
 
             except Exception as e:
@@ -350,25 +426,39 @@ class KnowledgeBase:
             self.stats['total_documents'] = len(self.documents)
             self.stats['total_terms'] = len(self.index)
 
+        logger.info(f"Ingestion complete! {len(new_documents)} documents, {len(new_index)} terms")
         if self.config.verbose:
-            logger.info(f"Ingestion complete! {len(new_documents)} documents, {len(new_index)} terms")
             print(f"\n✅ Ingestion complete!")
             print(f"   - {len(self.documents)} documents indexed")
             print(f"   - {len(self.index)} unique terms\n")
 
+    @retry(
+        stop=stop_after_attempt(MAX_RETRY_ATTEMPTS),
+        wait=wait_exponential(multiplier=RETRY_MULTIPLIER, min=RETRY_MIN_WAIT_SECONDS, max=RETRY_MAX_WAIT_SECONDS),
+        retry=retry_if_exception_type((OSError, IOError)),
+        reraise=True
+    )
     def _save_cache(self, cache_path: Path) -> None:
-        """Save index to cache file using secure JSON format."""
+        """Save index to cache file using secure JSON format with retry logic.
+
+        Retries up to 3 times with exponential backoff for I/O errors.
+        """
         try:
             cache_data = {'documents': self.documents, 'index': self.index}
-            with open(cache_path, 'w', encoding='utf-8') as f:
-                json.dump(cache_data, f, indent=2, ensure_ascii=False)
+            # Ensure parent directory exists
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            # Write to temp file first, then atomic rename
+            temp_path = cache_path.with_suffix(CACHE_TEMP_SUFFIX)
+            with open(temp_path, 'w', encoding='utf-8') as f:
+                json.dump(cache_data, f, indent=JSON_INDENT, ensure_ascii=False)
+            # Atomic rename
+            temp_path.replace(cache_path)
             logger.info(f"Saved cache to {cache_path}")
             if self.config.verbose:
                 print(f"💾 Cached knowledge base to {cache_path}\n")
         except Exception as e:
             logger.error(f"Failed to save cache: {e}", exc_info=True)
-            if self.config.verbose:
-                print(f"⚠️  Failed to cache: {e}\n")
+            raise
 
     def query(self, search_terms: str, use_cache: bool = True) -> List[Tuple[str, Dict]]:
         """
@@ -385,7 +475,7 @@ class KnowledgeBase:
             ValueError: If search_terms is empty
         """
         if not search_terms or not search_terms.strip():
-            raise ValueError("Search terms cannot be empty")
+            raise ValueError(ERR_EMPTY_SEARCH_TERMS)
 
         # Update stats (thread-safe with lock)
         with self._lock:
@@ -431,8 +521,6 @@ class KnowledgeBase:
 
         except Exception as e:
             logger.error(f"Query error: {e}", exc_info=True)
-            if self.config.verbose:
-                print(f"❌ Query error: {e}")
             raise
 
     def get_answer(self, question: str, max_content_length: int = 500) -> str:
@@ -499,11 +587,13 @@ class KnowledgeBase:
     def clear_cache(self) -> None:
         """Clear query cache (useful for testing or memory management)."""
         self.query_cache.clear()
+        logger.info("Query cache cleared")
         if self.config.verbose:
             print("🧹 Query cache cleared")
 
     def rebuild_index(self) -> None:
         """Force rebuild of the document index."""
+        logger.info("Forcing index rebuild...")
         if self.config.verbose:
             print("🔄 Forcing index rebuild...")
         self._build_index()
@@ -536,8 +626,6 @@ class KnowledgeBase:
 
         except Exception as e:
             logger.error(f"Cleanup error in __exit__: {e}", exc_info=True)
-            if self.config.verbose:
-                print(f"⚠️  Cleanup error: {e}")
 
         # Don't suppress exceptions from the with block
         return False
