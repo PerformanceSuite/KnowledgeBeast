@@ -120,23 +120,88 @@ def cleanup_heartbeat() -> None:
 )
 @limiter.limit("100/minute")
 async def health_check(request: Request) -> HealthResponse:
-    """Health check endpoint.
+    """Health check endpoint with deep system checks.
+
+    Checks:
+    - KB initialization
+    - Cache file accessibility
+    - Knowledge directories accessibility
+    - Memory usage (if psutil available)
 
     Returns:
         Health status, version, and initialization state
     """
+    kb_initialized = False
+    cache_readable = False
+    dirs_accessible = False
+    issues = []
+
     try:
         kb = get_kb_instance()
         kb_initialized = True
-    except Exception:
-        kb_initialized = False
 
-    return HealthResponse(
-        status="healthy" if kb_initialized else "degraded",
+        # Check cache file accessibility
+        try:
+            cache_path = Path(kb.config.cache_file)
+            if cache_path.exists():
+                cache_readable = cache_path.is_file() and cache_path.stat().st_size >= 0
+            else:
+                cache_readable = True  # Cache doesn't exist yet, but that's ok
+        except Exception as e:
+            issues.append(f"Cache check failed: {str(e)}")
+            logger.warning(f"Health check - cache accessibility issue: {e}")
+
+        # Check knowledge directories accessibility
+        try:
+            accessible_dirs = 0
+            for kb_dir in kb.config.knowledge_dirs:
+                if kb_dir.exists() and kb_dir.is_dir():
+                    accessible_dirs += 1
+            dirs_accessible = accessible_dirs > 0
+            if not dirs_accessible:
+                issues.append("No accessible knowledge directories")
+        except Exception as e:
+            issues.append(f"Directory check failed: {str(e)}")
+            logger.warning(f"Health check - directory accessibility issue: {e}")
+
+        # Optional: Check memory usage if psutil available
+        try:
+            import psutil
+            process = psutil.Process()
+            mem_info = process.memory_info()
+            mem_mb = mem_info.rss / 1024 / 1024
+            if mem_mb > 1000:  # Warn if over 1GB
+                issues.append(f"High memory usage: {mem_mb:.1f}MB")
+                logger.warning(f"Health check - high memory usage: {mem_mb:.1f}MB")
+        except ImportError:
+            pass  # psutil not available, skip memory check
+        except Exception as e:
+            logger.debug(f"Memory check failed: {e}")
+
+    except Exception as e:
+        issues.append(f"KB initialization failed: {str(e)}")
+        logger.error(f"Health check - KB initialization issue: {e}")
+
+    # Determine overall health status
+    if kb_initialized and cache_readable and dirs_accessible:
+        status = "healthy"
+    elif kb_initialized:
+        status = "degraded"
+    else:
+        status = "unhealthy"
+
+    response = HealthResponse(
+        status=status,
         version=__version__,
         kb_initialized=kb_initialized,
         timestamp=datetime.utcnow().isoformat() + "Z"
     )
+
+    # Add issues to response if any (add as extra field if needed)
+    if issues and hasattr(response, '__dict__'):
+        response.__dict__['issues'] = issues
+
+    return response
 
 
 @router.get(
