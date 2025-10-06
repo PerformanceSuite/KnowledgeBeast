@@ -11,6 +11,7 @@ Production-ready FastAPI application with:
 """
 
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -40,8 +41,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Initialize rate limiter
-limiter = Limiter(key_func=get_remote_address)
+from knowledgebeast.core.constants import (
+    DEFAULT_RATE_LIMIT_PER_MINUTE,
+    DEFAULT_RATE_LIMIT_STORAGE,
+    ENV_PREFIX,
+    HTTP_404_MESSAGE,
+    HTTP_500_MESSAGE,
+    HTTP_500_DETAIL,
+    HTTP_422_MESSAGE
+)
+
+# Rate limiting configuration
+RATE_LIMIT_PER_MINUTE = int(os.getenv(f'{ENV_PREFIX}RATE_LIMIT_PER_MINUTE', str(DEFAULT_RATE_LIMIT_PER_MINUTE)))
+RATE_LIMIT_STORAGE = os.getenv(f'{ENV_PREFIX}RATE_LIMIT_STORAGE', DEFAULT_RATE_LIMIT_STORAGE)
+
+# Initialize rate limiter with configurable defaults
+limiter = Limiter(
+    key_func=get_remote_address,
+    default_limits=[f"{RATE_LIMIT_PER_MINUTE}/minute"],
+    storage_uri=RATE_LIMIT_STORAGE
+)
 
 
 @asynccontextmanager
@@ -193,12 +212,14 @@ def register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(404)
     async def not_found_handler(request: Request, exc: Exception) -> JSONResponse:
         """Handle 404 Not Found errors."""
+        # Don't expose internal details in error message
+        error_detail = str(exc) if str(exc) and not "/" in str(exc) else None
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
             content=ErrorResponse(
                 error="NotFound",
-                message="The requested resource was not found",
-                detail=str(exc) if str(exc) else None,
+                message=HTTP_404_MESSAGE,
+                detail=error_detail,
                 status_code=404
             ).model_dump()
         )
@@ -207,12 +228,13 @@ def register_error_handlers(app: FastAPI) -> None:
     async def internal_error_handler(request: Request, exc: Exception) -> JSONResponse:
         """Handle 500 Internal Server errors."""
         logger.error(f"Internal server error: {exc}", exc_info=True)
+        # Never expose internal paths or stack traces to users
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content=ErrorResponse(
                 error="InternalServerError",
-                message="An internal server error occurred",
-                detail="Please contact support if this persists",
+                message=HTTP_500_MESSAGE,
+                detail=HTTP_500_DETAIL,
                 status_code=500
             ).model_dump()
         )
@@ -224,6 +246,7 @@ def register_error_handlers(app: FastAPI) -> None:
     ) -> JSONResponse:
         """Handle request validation errors."""
         errors = exc.errors()
+        # Sanitize error details to avoid exposing internal paths
         detail = "; ".join([
             f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']}"
             for err in errors
@@ -233,7 +256,7 @@ def register_error_handlers(app: FastAPI) -> None:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             content=ErrorResponse(
                 error="ValidationError",
-                message="Request validation failed",
+                message=HTTP_422_MESSAGE,
                 detail=detail,
                 status_code=422
             ).model_dump()
@@ -247,12 +270,20 @@ def register_error_handlers(app: FastAPI) -> None:
         """Handle generic exceptions."""
         logger.error(f"Unhandled exception: {exc}", exc_info=True)
 
+        # Don't expose internal details - sanitize error message
+        error_msg = str(exc)
+        # Remove any file paths from error message
+        if "/" in error_msg or "\\" in error_msg:
+            error_detail = HTTP_500_DETAIL
+        else:
+            error_detail = error_msg if error_msg else HTTP_500_DETAIL
+
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content=ErrorResponse(
                 error=type(exc).__name__,
                 message="An unexpected error occurred",
-                detail=str(exc) if str(exc) else None,
+                detail=error_detail,
                 status_code=500
             ).model_dump()
         )
