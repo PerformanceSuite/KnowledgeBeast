@@ -477,7 +477,7 @@ class KnowledgeBase:
         if not search_terms or not search_terms.strip():
             raise ValueError(ERR_EMPTY_SEARCH_TERMS)
 
-        # Single lock for stats update
+        # Update stats (thread-safe with lock)
         with self._lock:
             self.stats['queries'] += 1
             self.last_access = time.time()
