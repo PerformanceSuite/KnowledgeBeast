@@ -148,6 +148,18 @@ class KnowledgeBase:
         if self.config.auto_warm:
             self.warm_up()
 
+    @classmethod
+    def from_config(cls, config: KnowledgeBeastConfig) -> 'KnowledgeBase':
+        """Create knowledge base from configuration.
+
+        Args:
+            config: KnowledgeBeastConfig instance
+
+        Returns:
+            KnowledgeBase instance initialized with config
+        """
+        return cls(config=config)
+
     def _report_progress(self, message: str, current: int = 0, total: int = 0) -> None:
         """Report progress if callback is configured."""
         if self.progress_callback:
