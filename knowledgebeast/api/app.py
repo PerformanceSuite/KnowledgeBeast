@@ -27,14 +27,16 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from knowledgebeast import __version__, __description__
+from knowledgebeast import __description__, __version__
 from knowledgebeast.api.middleware import (
+    LoggingMiddleware,
     RequestIDMiddleware,
+    RequestSizeLimitMiddleware,
+    SecurityHeadersMiddleware,
     TimingMiddleware,
-    LoggingMiddleware
 )
-from knowledgebeast.api.routes import router, get_kb_instance, cleanup_heartbeat
 from knowledgebeast.api.models import ErrorResponse
+from knowledgebeast.api.routes import cleanup_heartbeat, get_kb_instance, router
 
 # Setup logging
 logging.basicConfig(
@@ -56,6 +58,38 @@ from knowledgebeast.core.constants import (
 # Rate limiting configuration
 RATE_LIMIT_PER_MINUTE = int(os.getenv(f'{ENV_PREFIX}RATE_LIMIT_PER_MINUTE', str(DEFAULT_RATE_LIMIT_PER_MINUTE)))
 RATE_LIMIT_STORAGE = os.getenv(f'{ENV_PREFIX}RATE_LIMIT_STORAGE', DEFAULT_RATE_LIMIT_STORAGE)
+
+# CORS configuration - restrict origins for security
+def get_allowed_origins() -> list:
+    """Get allowed CORS origins from environment.
+
+    Returns:
+        List of allowed origin strings. Defaults to localhost for development.
+    """
+    origins_env = os.getenv(f'{ENV_PREFIX}ALLOWED_ORIGINS', '')
+
+    if origins_env:
+        # Parse comma-separated origins
+        origins = [origin.strip() for origin in origins_env.split(',') if origin.strip()]
+        if origins:
+            logger.info(f"CORS configured with {len(origins)} allowed origins")
+            return origins
+
+    # Default to localhost for development
+    default_origins = [
+        "http://localhost:3000",
+        "http://localhost:8000",
+        "http://localhost:8080",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:8000",
+        "http://127.0.0.1:8080"
+    ]
+    logger.warning("No KB_ALLOWED_ORIGINS configured, using development defaults")
+    return default_origins
+
+# Security configuration
+MAX_REQUEST_SIZE = int(os.getenv(f'{ENV_PREFIX}MAX_REQUEST_SIZE', '10485760'))  # 10MB default
+MAX_QUERY_LENGTH = int(os.getenv(f'{ENV_PREFIX}MAX_QUERY_LENGTH', '10000'))  # 10k chars default
 
 # Initialize rate limiter with configurable defaults
 limiter = Limiter(
@@ -168,18 +202,20 @@ def create_app() -> FastAPI:
         }
     )
 
-    # Add CORS middleware
-    # NOTE: Configure origins appropriately for production
+    # Add CORS middleware with restricted origins
+    allowed_origins = get_allowed_origins()
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # TODO: Restrict in production
+        allow_origins=allowed_origins,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],  # Only required methods
+        allow_headers=["Content-Type", "Authorization", "X-Request-ID"],
         expose_headers=["X-Request-ID", "X-Process-Time"]
     )
 
     # Add custom middleware (order matters - first added is outermost)
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(RequestSizeLimitMiddleware, max_size=MAX_REQUEST_SIZE, max_query_length=MAX_QUERY_LENGTH)
     app.add_middleware(LoggingMiddleware)
     app.add_middleware(TimingMiddleware)
     app.add_middleware(RequestIDMiddleware)
