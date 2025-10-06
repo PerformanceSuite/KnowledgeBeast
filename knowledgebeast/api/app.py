@@ -14,7 +14,7 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator, Union
 
@@ -320,7 +320,7 @@ async def root() -> dict:
         "redoc": "/redoc",
         "openapi": "/openapi.json",
         "api_v1": "/api/v1",
-        "timestamp": datetime.utcnow().isoformat() + "Z"
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     }
 
 

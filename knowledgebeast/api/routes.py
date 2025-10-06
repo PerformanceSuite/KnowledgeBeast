@@ -17,7 +17,7 @@ Provides 12 production-ready endpoints:
 
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -197,7 +197,7 @@ async def health_check(request: Request, api_key: str = Depends(get_api_key)) ->
         status=status,
         version=__version__,
         kb_initialized=kb_initialized,
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     )
 
     # Add issues to response if any (add as extra field if needed)
