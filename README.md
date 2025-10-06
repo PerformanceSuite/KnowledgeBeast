@@ -1,261 +1,317 @@
 # KnowledgeBeast
 
-A high-performance knowledge base system with intelligent caching, search, and a world-class CLI.
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**Powered by battle-tested code from Performia's knowledge_rag_v2.py engine.**
+A production-ready knowledge management system with RAG (Retrieval-Augmented Generation) capabilities. Built for speed, reliability, and ease of use.
 
 ## Features
 
-- **Document Management**: Add and manage Markdown documents with Docling converter
-- **Intelligent Search**: Fast word-index based search with LRU caching
-- **Automatic Warming**: Pre-load and warm cache on startup for instant queries
-- **Cache Warming**: Pre-load frequently accessed data with configurable queries
-- **Heartbeat System**: Background maintenance, stale cache detection, and health monitoring
-- **Multi-Directory Support**: Ingest from multiple knowledge base directories
-- **Progress Callbacks**: Track long operations with custom callbacks
-- **Environment Config**: Full configuration via environment variables
-- **Production Ready**: Comprehensive error handling and thread-safe operation
-- **Beautiful CLI**: Rich terminal output with progress bars, tables, and colors
-
-## Installation
-
-```bash
-pip install -e .
-```
+- **Document Ingestion**: Support for multiple document formats via Docling
+- **Vector Search**: Semantic search using sentence-transformers and ChromaDB
+- **Intelligent Caching**: LRU cache for query results with configurable size
+- **Background Heartbeat**: Continuous health monitoring and maintenance
+- **FastAPI Integration**: Production-ready REST API
+- **CLI**: Powerful command-line interface with Click
+- **Type Safety**: Full type hints and mypy support
+- **Production Ready**: Comprehensive error handling, logging, and testing
 
 ## Quick Start
 
-### 1. Initialize a Knowledge Base
+### Installation
 
 ```bash
-knowledgebeast init ./my-knowledge-base
-cd my-knowledge-base
+pip install knowledgebeast
 ```
 
-### 2. Add Documents
+Or install from source:
 
 ```bash
-# Add a single file
-knowledgebeast add document.pdf
-
-# Add all files in a directory
-knowledgebeast add ./documents -r
+git clone https://github.com/yourusername/knowledgebeast
+cd knowledgebeast
+pip install -e .
 ```
 
-### 3. Query Your Knowledge Base
+### Initialize
 
 ```bash
-knowledgebeast query "machine learning algorithms"
+knowledgebeast init
 ```
 
-### 4. Start the API Server
+### Ingest Documents
 
 ```bash
-knowledgebeast serve --port 5000
+knowledgebeast ingest path/to/document.pdf
 ```
 
-## CLI Commands
+### Query
 
-### `knowledgebeast init [PATH]`
-Initialize a new knowledge base with directory structure and configuration.
-
-**Options:**
-- `--name TEXT` - Knowledge base name
-- `--description TEXT` - Description
-
-**Example:**
 ```bash
-knowledgebeast init ./kb --name "My Knowledge Base"
+knowledgebeast query "What is the main topic?"
 ```
 
----
+## Usage
 
-### `knowledgebeast add <FILE_OR_DIR>`
-Add documents to the knowledge base.
+### Python API
 
-**Options:**
-- `-r, --recursive` - Add directories recursively
-- `--format [pdf|docx|md|txt|html|auto]` - Document format (auto-detect by default)
+```python
+from knowledgebeast import KnowledgeBeast, KnowledgeBeastConfig
 
-**Examples:**
+# Initialize with default config
+kb = KnowledgeBeast()
+
+# Ingest a document
+chunks = kb.ingest_document("path/to/document.pdf")
+print(f"Ingested {chunks} chunks")
+
+# Query the knowledge base
+results = kb.query("machine learning best practices", n_results=5)
+for result in results:
+    print(f"Text: {result['text']}")
+    print(f"Source: {result['metadata']['source']}")
+    print(f"Distance: {result['distance']}")
+
+# Get statistics
+stats = kb.get_stats()
+print(stats)
+
+# Cleanup
+kb.shutdown()
+```
+
+### Using Context Manager
+
+```python
+from knowledgebeast import KnowledgeBeast
+
+with KnowledgeBeast() as kb:
+    results = kb.query("your question")
+    # Automatic cleanup on exit
+```
+
+### Custom Configuration
+
+```python
+from pathlib import Path
+from knowledgebeast import KnowledgeBeast, KnowledgeBeastConfig
+
+config = KnowledgeBeastConfig(
+    data_dir=Path("./my_data"),
+    collection_name="my_collection",
+    embedding_model="all-MiniLM-L6-v2",
+    cache_size=200,
+    heartbeat_interval=30.0
+)
+
+kb = KnowledgeBeast(config)
+```
+
+### CLI Commands
+
 ```bash
-knowledgebeast add document.pdf
-knowledgebeast add ./documents -r
+# Initialize a new knowledge base
+knowledgebeast init --data-dir ./data
+
+# Ingest a document
+knowledgebeast ingest document.pdf --data-dir ./data
+
+# Query the knowledge base
+knowledgebeast query "your question" -n 10 --data-dir ./data
+
+# Show statistics
+knowledgebeast stats --data-dir ./data
+
+# Clear all documents
+knowledgebeast clear --data-dir ./data
+
+# Start the API server
+knowledgebeast serve --host 0.0.0.0 --port 8000
 ```
 
----
+### REST API
 
-### `knowledgebeast query "search terms"`
-Search the knowledge base.
+Start the server:
 
-**Options:**
-- `--no-cache` - Disable cache for this query
-- `-n, --limit INTEGER` - Maximum number of results (default: 10)
-- `--min-score FLOAT` - Minimum relevance score 0-1 (default: 0.0)
-
-**Examples:**
 ```bash
-knowledgebeast query "python programming"
-knowledgebeast query "search term" --limit 5 --min-score 0.5
+knowledgebeast serve
 ```
 
----
+Or with uvicorn directly:
 
-### `knowledgebeast serve`
-Start the REST API server.
-
-**Options:**
-- `-p, --port INTEGER` - Port to run server on (default: 5000)
-- `-h, --host TEXT` - Host to bind to (default: localhost)
-- `--debug` - Run in debug mode
-
-**Example:**
 ```bash
-knowledgebeast serve --port 8080 --host 0.0.0.0
+uvicorn knowledgebeast.api.app:app --host 0.0.0.0 --port 8000
 ```
 
-**API Endpoints:**
-- `GET /health` - Health check
-- `POST /query` - Search knowledge base
-- `GET /stats` - Statistics
-- `POST /documents/add` - Add document
+API endpoints:
 
----
+- `GET /api/v1/health` - Health check
+- `POST /api/v1/ingest` - Ingest a document
+- `POST /api/v1/query` - Query the knowledge base
+- `GET /api/v1/stats` - Get statistics
+- `DELETE /api/v1/clear` - Clear all documents
 
-### `knowledgebeast warm`
-Manually trigger cache warming.
+Example API usage:
 
-**Options:**
-- `-f, --force` - Skip cache warming optimization
-
-**Example:**
 ```bash
-knowledgebeast warm
+# Health check
+curl http://localhost:8000/api/v1/health
+
+# Query
+curl -X POST http://localhost:8000/api/v1/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "machine learning", "n_results": 5}'
+
+# Ingest document
+curl -X POST http://localhost:8000/api/v1/ingest \
+  -H "Content-Type: application/json" \
+  -d '{"file_path": "/path/to/document.pdf"}'
 ```
 
----
+### Docker Deployment
 
-### `knowledgebeast stats`
-Show knowledge base statistics.
-
-**Options:**
-- `-d, --detailed` - Show detailed statistics
-
-**Example:**
 ```bash
-knowledgebeast stats --detailed
+# Build image
+docker build -t knowledgebeast .
+
+# Run with docker-compose
+docker-compose up -d
 ```
 
----
+Or run directly:
 
-### `knowledgebeast heartbeat [start|stop|status]`
-Manage background heartbeat process.
-
-**Options:**
-- `-i, --interval INTEGER` - Heartbeat interval in seconds (default: 300)
-
-**Examples:**
 ```bash
-knowledgebeast heartbeat start --interval 600
-knowledgebeast heartbeat stop
-knowledgebeast heartbeat status
+docker run -p 8000:8000 -v $(pwd)/data:/app/data knowledgebeast
 ```
 
----
+## Architecture
 
-### `knowledgebeast health`
-Run health check on the knowledge base.
-
-**Example:**
-```bash
-knowledgebeast health
 ```
-
----
-
-### `knowledgebeast clear-cache`
-Clear the query cache.
-
-**Options:**
-- `-y, --yes` - Skip confirmation prompt
-
-**Example:**
-```bash
-knowledgebeast clear-cache --yes
+┌─────────────────────────────────────────────────────────────┐
+│                     KnowledgeBeast                          │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
+│  │   CLI        │  │   API        │  │   Python     │     │
+│  │   (Click)    │  │  (FastAPI)   │  │   SDK        │     │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘     │
+│         │                 │                 │              │
+│         └─────────────────┼─────────────────┘              │
+│                           │                                │
+│                  ┌────────▼────────┐                       │
+│                  │  Core Engine    │                       │
+│                  ├─────────────────┤                       │
+│                  │  - Ingestion    │                       │
+│                  │  - Query        │                       │
+│                  │  - Caching      │                       │
+│                  │  - Heartbeat    │                       │
+│                  └────────┬────────┘                       │
+│                           │                                │
+│         ┌─────────────────┼─────────────────┐             │
+│         │                 │                 │             │
+│    ┌────▼────┐      ┌────▼────┐      ┌────▼────┐        │
+│    │ Docling │      │ ChromaDB│      │  Cache  │        │
+│    │Converter│      │  Vector │      │  (LRU)  │        │
+│    └─────────┘      │  Store  │      └─────────┘        │
+│                     └─────────┘                          │
+└─────────────────────────────────────────────────────────────┘
 ```
-
----
-
-### `knowledgebeast version`
-Display version and system information.
-
-**Example:**
-```bash
-knowledgebeast version
-```
-
----
-
-## Configuration
-
-KnowledgeBeast uses a `.knowledgebeast.yml` configuration file:
-
-```yaml
-name: My Knowledge Base
-description: Description of your knowledge base
-version: '1.0'
-
-paths:
-  documents: ./documents
-  cache: ./cache
-  index: ./index
-
-cache:
-  enabled: true
-  max_size: 1000
-  ttl: 3600
-
-search:
-  max_results: 10
-  min_relevance: 0.3
-
-heartbeat:
-  enabled: false
-  interval: 300
-```
-
-## Environment Variables
-
-All configuration can be overridden with environment variables using the `KB_` prefix:
-
-- `KB_CONFIG` - Path to config file (default: `.knowledgebeast.yml`)
-- `KB_KNOWLEDGE_DIRS` - Comma-separated list of knowledge directories
-- `KB_CACHE_FILE` - Path to cache file
-- `KB_MAX_CACHE_SIZE` - Maximum number of cached queries
-- `KB_HEARTBEAT_INTERVAL` - Heartbeat interval in seconds
-- `KB_AUTO_WARM` - Auto-warm on initialization (true/false)
 
 ## Development
 
-### Install Development Dependencies
+### Setup Development Environment
 
 ```bash
+# Clone repository
+git clone https://github.com/yourusername/knowledgebeast
+cd knowledgebeast
+
+# Install development dependencies
+make dev
+
+# Or manually
 pip install -e ".[dev]"
 ```
 
-### Run Tests
+### Running Tests
 
 ```bash
-pytest
+make test
 ```
 
-### Format Code
+### Code Quality
 
 ```bash
-black knowledgebeast/
-ruff check knowledgebeast/
+# Format code
+make format
+
+# Run linters
+make lint
 ```
+
+### Available Make Commands
+
+```bash
+make help          # Show all available commands
+make install       # Install production dependencies
+make dev           # Install development dependencies
+make test          # Run tests with coverage
+make lint          # Run linters
+make format        # Format code
+make clean         # Clean build artifacts
+make build         # Build distribution packages
+make docker-build  # Build Docker image
+make docker-run    # Run Docker container
+make serve         # Start API server
+```
+
+## Configuration
+
+KnowledgeBeast can be configured via:
+
+1. **Python API**: Pass `KnowledgeBeastConfig` object
+2. **CLI**: Use command-line options
+3. **Environment Variables**: Prefix with `KB_`
+
+### Configuration Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `data_dir` | `./data` | Directory for storing data and indexes |
+| `collection_name` | `knowledge_base` | ChromaDB collection name |
+| `embedding_model` | `all-MiniLM-L6-v2` | Sentence-transformers model |
+| `chunk_size` | `1000` | Maximum chunk size in characters |
+| `chunk_overlap` | `200` | Overlap between chunks |
+| `cache_size` | `100` | Maximum LRU cache size |
+| `heartbeat_interval` | `60.0` | Heartbeat interval in seconds |
+| `log_level` | `INFO` | Logging level |
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
 ## License
 
-MIT License - see LICENSE file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Acknowledgments
+
+- Built with [Docling](https://github.com/DS4SD/docling) for document conversion
+- Powered by [ChromaDB](https://www.trychroma.com/) for vector storage
+- Uses [sentence-transformers](https://www.sbert.net/) for embeddings
+- FastAPI for the REST API
+- Click for the CLI
+
+## Support
+
+- Documentation: [https://github.com/yourusername/knowledgebeast#readme](https://github.com/yourusername/knowledgebeast#readme)
+- Issues: [https://github.com/yourusername/knowledgebeast/issues](https://github.com/yourusername/knowledgebeast/issues)
+
+---
+
+Made with ❤️ by Daniel Connolly
