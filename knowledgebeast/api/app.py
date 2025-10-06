@@ -15,12 +15,14 @@ import os
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import AsyncIterator, Union
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -189,6 +191,14 @@ def create_app() -> FastAPI:
     # Include routers with API versioning
     app.include_router(router, prefix="/api/v1")
 
+    # Mount static files for web UI
+    static_dir = Path(__file__).parent.parent / "web" / "static"
+    if static_dir.exists():
+        app.mount("/ui", StaticFiles(directory=str(static_dir), html=True), name="ui")
+        logger.info(f"Web UI mounted at /ui (serving from {static_dir})")
+    else:
+        logger.warning(f"Static directory not found: {static_dir}")
+
     # Register error handlers
     register_error_handlers(app)
 
@@ -305,6 +315,7 @@ async def root() -> dict:
         "name": "KnowledgeBeast API",
         "version": __version__,
         "description": __description__,
+        "web_ui": "/ui",
         "docs": "/docs",
         "redoc": "/redoc",
         "openapi": "/openapi.json",
