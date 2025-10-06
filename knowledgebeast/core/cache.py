@@ -1,5 +1,6 @@
 """LRU Cache implementation using OrderedDict."""
 
+import threading
 from collections import OrderedDict
 from typing import Any, Generic, Optional, TypeVar
 
@@ -20,10 +21,10 @@ class LRUCache(Generic[K, V]):
     
     def __init__(self, capacity: int = 100) -> None:
         """Initialize the LRU cache.
-        
+
         Args:
             capacity: Maximum number of items to store
-            
+
         Raises:
             ValueError: If capacity is not positive
         """
@@ -31,58 +32,65 @@ class LRUCache(Generic[K, V]):
             raise ValueError("Capacity must be positive")
         self.capacity = capacity
         self.cache: OrderedDict[K, V] = OrderedDict()
+        self._lock = threading.Lock()
     
     def get(self, key: K) -> Optional[V]:
         """Get an item from the cache.
-        
+
         Args:
             key: The key to look up
-            
+
         Returns:
             The cached value if found, None otherwise
         """
-        if key not in self.cache:
-            return None
-        # Move to end to mark as recently used
-        self.cache.move_to_end(key)
-        return self.cache[key]
+        with self._lock:
+            if key not in self.cache:
+                return None
+            # Move to end to mark as recently used
+            self.cache.move_to_end(key)
+            return self.cache[key]
     
     def put(self, key: K, value: V) -> None:
         """Put an item in the cache.
-        
+
         Args:
             key: The key to store under
             value: The value to store
         """
-        if key in self.cache:
-            # Update existing key and move to end
-            self.cache.move_to_end(key)
-        self.cache[key] = value
-        
-        # Remove least recently used item if over capacity
-        if len(self.cache) > self.capacity:
-            self.cache.popitem(last=False)
+        with self._lock:
+            if key in self.cache:
+                # Update existing key and move to end
+                self.cache.move_to_end(key)
+            self.cache[key] = value
+
+            # Remove least recently used item if over capacity
+            if len(self.cache) > self.capacity:
+                self.cache.popitem(last=False)
     
     def clear(self) -> None:
         """Clear all items from the cache."""
-        self.cache.clear()
+        with self._lock:
+            self.cache.clear()
     
     def __len__(self) -> int:
         """Return the current number of items in the cache."""
-        return len(self.cache)
+        with self._lock:
+            return len(self.cache)
     
     def __contains__(self, key: K) -> bool:
         """Check if a key exists in the cache."""
-        return key in self.cache
+        with self._lock:
+            return key in self.cache
     
     def stats(self) -> dict[str, Any]:
         """Get cache statistics.
-        
+
         Returns:
             Dictionary with cache statistics
         """
-        return {
-            "size": len(self.cache),
-            "capacity": self.capacity,
-            "utilization": len(self.cache) / self.capacity if self.capacity > 0 else 0
-        }
+        with self._lock:
+            return {
+                "size": len(self.cache),
+                "capacity": self.capacity,
+                "utilization": len(self.cache) / self.capacity if self.capacity > 0 else 0
+            }

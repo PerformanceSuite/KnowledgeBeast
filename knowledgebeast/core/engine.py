@@ -179,7 +179,7 @@ class KnowledgeBase:
             for i, query in enumerate(self.config.warming_queries, 1):
                 self._report_progress(f"Warming query: {query[:50]}...", i, total_queries)
                 try:
-                    self.query(query, use_cache=False)  # Populate cache
+                    self.query(query, use_cache=True)  # Populate cache - FIXED!
                     self.stats['warm_queries'] += 1
                 except Exception as e:
                     logger.warning(f"Warming query failed '{query}': {e}")
@@ -477,7 +477,7 @@ class KnowledgeBase:
         if not search_terms or not search_terms.strip():
             raise ValueError(ERR_EMPTY_SEARCH_TERMS)
 
-        # Update stats (thread-safe with lock)
+        # Single lock for stats update
         with self._lock:
             self.stats['queries'] += 1
             self.last_access = time.time()
@@ -485,7 +485,7 @@ class KnowledgeBase:
         # Generate cache key from query
         cache_key = self._generate_cache_key(search_terms)
 
-        # Check cache with LRU update (cache is thread-safe)
+        # Check cache (LRU cache is now thread-safe)
         if use_cache:
             cached_result = self.query_cache.get(cache_key)
             if cached_result is not None:
@@ -496,24 +496,34 @@ class KnowledgeBase:
         with self._lock:
             self.stats['cache_misses'] += 1
 
-        # Execute query (need lock for reading index and documents)
+        # Execute query with minimal lock scope using snapshot pattern
         try:
             search_terms_list = search_terms.lower().split() if isinstance(search_terms, str) else search_terms
 
-            # Find documents containing search terms (read-only, needs lock)
+            # Create index snapshot with minimal lock time
+            # This allows concurrent queries to proceed without blocking each other
             with self._lock:
-                matches = {}
-                for term in search_terms_list:
-                    if term in self.index:
-                        for doc_id in self.index[term]:
-                            matches[doc_id] = matches.get(doc_id, 0) + 1
+                index_snapshot = {
+                    term: list(self.index.get(term, []))
+                    for term in search_terms_list
+                }
 
-                # Sort by relevance (number of matching terms)
-                sorted_matches = sorted(matches.items(), key=lambda x: x[1], reverse=True)
-                # Deep copy document data to avoid returning references
-                results = [(doc_id, dict(self.documents[doc_id])) for doc_id, score in sorted_matches]
+            # Search WITHOUT holding lock - this is the performance optimization!
+            # Multiple queries can now execute in parallel
+            matches = {}
+            for term, doc_ids in index_snapshot.items():
+                for doc_id in doc_ids:
+                    matches[doc_id] = matches.get(doc_id, 0) + 1
 
-            # Cache results with LRU (cache is thread-safe)
+            # Sort by relevance (number of matching terms)
+            sorted_matches = sorted(matches.items(), key=lambda x: x[1], reverse=True)
+
+            # Get document data with single lock
+            with self._lock:
+                results = [(doc_id, dict(self.documents[doc_id]))
+                           for doc_id, _ in sorted_matches]
+
+            # Cache results (LRU cache is thread-safe)
             if use_cache:
                 self.query_cache.put(cache_key, results)
 
