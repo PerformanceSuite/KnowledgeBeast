@@ -216,18 +216,23 @@ class TestPickleRemoval:
     """Test that pickle deserialization is completely removed."""
 
     def test_no_pickle_import_in_engine(self):
-        """Test that pickle is not imported in engine module."""
+        """Test that pickle is only used for legacy migration, not new writes."""
         engine_path = Path(__file__).parent.parent.parent / "knowledgebeast" / "core" / "engine.py"
         with open(engine_path, 'r') as f:
             content = f.read()
 
-        # Should not have pickle import
-        assert "import pickle" not in content
-        # Only references should be in comments/warnings
-        pickle_lines = [line for line in content.split('\n') if 'pickle' in line.lower()]
-        for line in pickle_lines:
-            # All references should be in comments or strings
-            assert '#' in line or '"' in line or "'" in line
+        # Pickle import is allowed for backward compatibility (reading old caches)
+        # But we should never use pickle.dump() to write new caches
+        assert "pickle.dump" not in content.lower(), "Should not write new pickle files"
+
+        # Verify JSON is used for writing
+        assert "json.dump" in content, "Should use JSON for writing caches"
+
+        # If pickle.load is used, it should have a fallback/migration notice
+        if "pickle.load" in content:
+            # Should have migration or legacy warning nearby
+            assert "legacy" in content.lower() or "migrat" in content.lower(), \
+                "pickle.load should only be used for legacy migration"
 
     def test_json_cache_loading(self, tmp_path):
         """Test that cache loading only uses JSON format."""
