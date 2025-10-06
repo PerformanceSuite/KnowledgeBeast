@@ -15,8 +15,10 @@ Provides 12 production-ready endpoints:
 12. GET /collections/{name} - Get collection info
 """
 
+import asyncio
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -55,6 +57,9 @@ router = APIRouter()
 
 # Initialize rate limiter
 limiter = Limiter(key_func=get_remote_address)
+
+# Thread pool for blocking operations
+_executor = ThreadPoolExecutor(max_workers=4)
 
 # Global instances (singleton pattern)
 _kb_instance: Optional[KnowledgeBase] = None
@@ -223,7 +228,11 @@ async def get_stats(request: Request) -> StatsResponse:
     """
     try:
         kb = get_kb_instance()
-        stats = kb.get_stats()
+        # Use executor to avoid blocking event loop
+        stats = await asyncio.get_event_loop().run_in_executor(
+            _executor,
+            kb.get_stats
+        )
 
         return StatsResponse(**stats)
 
@@ -269,11 +278,19 @@ async def query_knowledge_base(
         cache_key = kb._generate_cache_key(query_request.query)
         was_cached = cache_key in kb.query_cache._cache
 
-        # Execute query
-        results = kb.query(
+        # Execute query using executor to avoid blocking event loop
+        results = await asyncio.get_event_loop().run_in_executor(
+            _executor,
+            kb.query,
             query_request.query,
-            use_cache=query_request.use_cache
+            query_request.use_cache
         )
+
+        # Apply pagination if specified
+        total = len(results)
+        offset = getattr(query_request, 'offset', 0)
+        limit = getattr(query_request, 'limit', total)
+        paginated_results = results[offset:offset + limit]
 
         # Convert results to QueryResult models
         query_results = [
@@ -284,7 +301,7 @@ async def query_knowledge_base(
                 path=doc["path"],
                 kb_dir=doc["kb_dir"]
             )
-            for doc_id, doc in results
+            for doc_id, doc in paginated_results
         ]
 
         return QueryResponse(
@@ -360,8 +377,11 @@ async def ingest_document(
             "Consider batch ingestion for better performance."
         )
 
-        # Trigger rebuild to include new file
-        kb.rebuild_index()
+        # Trigger rebuild to include new file (non-blocking)
+        await asyncio.get_event_loop().run_in_executor(
+            _executor,
+            kb.rebuild_index
+        )
 
         # Generate doc_id (similar to how engine does it)
         doc_id = str(file_path)
@@ -420,9 +440,12 @@ async def batch_ingest_documents(
             else:
                 successful += 1
 
-        # Rebuild index to include all files
+        # Rebuild index to include all files (non-blocking)
         if successful > 0:
-            kb.rebuild_index()
+            await asyncio.get_event_loop().run_in_executor(
+                _executor,
+                kb.rebuild_index
+            )
 
         total_files = len(batch_request.file_paths)
         failed = len(failed_files)
@@ -476,12 +499,18 @@ async def warm_knowledge_base(
 
         start_time = time.time()
 
-        # Rebuild if requested
+        # Rebuild if requested (non-blocking)
         if warm_request.force_rebuild:
-            kb.rebuild_index()
+            await asyncio.get_event_loop().run_in_executor(
+                _executor,
+                kb.rebuild_index
+            )
 
-        # Warm up
-        kb.warm_up()
+        # Warm up (non-blocking)
+        await asyncio.get_event_loop().run_in_executor(
+            _executor,
+            kb.warm_up
+        )
 
         warm_time = time.time() - start_time
 
@@ -524,8 +553,11 @@ async def clear_cache(request: Request) -> CacheClearResponse:
         # Get count before clearing
         cleared_count = len(kb.query_cache)
 
-        # Clear cache
-        kb.clear_cache()
+        # Clear cache (non-blocking)
+        await asyncio.get_event_loop().run_in_executor(
+            _executor,
+            kb.clear_cache
+        )
 
         return CacheClearResponse(
             success=True,

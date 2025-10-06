@@ -21,6 +21,8 @@ import time
 import hashlib
 import threading
 import logging
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from multiprocessing import cpu_count
 from typing import Dict, List, Tuple, Optional, Callable
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from knowledgebeast.core.config import KnowledgeBeastConfig
@@ -76,6 +78,55 @@ except ImportError:
                 raise
 
     DocumentConverter = FallbackConverter
+
+
+def _process_single_document(args: Tuple[Path, Path, bool]) -> Optional[Dict]:
+    """Process a single document for parallel ingestion.
+
+    This function is designed to be called from ProcessPoolExecutor.
+    It's a module-level function (not a method) to be picklable.
+
+    Args:
+        args: Tuple of (kb_dir, md_file, use_fallback_converter)
+
+    Returns:
+        Dictionary with document data or None on failure
+    """
+    kb_dir, md_file, use_fallback = args
+
+    try:
+        # Create converter instance in this process
+        if use_fallback or not DOCLING_AVAILABLE:
+            converter = FallbackConverter()
+        else:
+            converter = DocumentConverter()
+
+        # Convert document
+        result = converter.convert(md_file)
+
+        if result.document:
+            # Build document data
+            doc_id = str(md_file.relative_to(kb_dir.parent))
+            doc_data = {
+                'doc_id': doc_id,
+                'path': str(md_file),
+                'content': result.document.export_to_markdown(),
+                'name': result.document.name,
+                'kb_dir': str(kb_dir)
+            }
+
+            # Build word index for this document
+            content_lower = doc_data['content'].lower()
+            words = content_lower.split()
+            doc_data['words'] = set(words)  # Unique words in this doc
+
+            return doc_data
+
+    except Exception as e:
+        logger.error(f"Failed to process {md_file}: {e}")
+        return None
+
+    return None
 
 
 class KnowledgeBase:
@@ -360,10 +411,10 @@ class KnowledgeBase:
         return self.converter.convert(path)
 
     def _build_index(self) -> None:
-        """Build document index from all knowledge directories."""
-        logger.info("Ingesting knowledge base...")
+        """Build document index from all knowledge directories using parallel processing."""
+        logger.info("Ingesting knowledge base with parallel processing...")
         if self.config.verbose:
-            print("📚 Ingesting knowledge base...")
+            print("📚 Ingesting knowledge base with parallel processing...")
 
         # Collect all markdown files (can be done without lock - read-only)
         all_md_files = []
@@ -386,38 +437,97 @@ class KnowledgeBase:
         new_documents = {}
         new_index = {}
 
-        # Process each file (document conversion can be parallel, indexing is local)
-        for i, (kb_dir, md_file) in enumerate(all_md_files, 1):
-            self._report_progress(f"Ingesting {md_file.name}", i, len(all_md_files))
+        # Determine if using fallback converter
+        use_fallback = not DOCLING_AVAILABLE
 
-            try:
-                result = self._convert_document_with_retry(md_file)
-                if result.document:
-                    # Store document with relative path from its knowledge dir
-                    doc_id = str(md_file.relative_to(kb_dir.parent))
-                    new_documents[doc_id] = {
-                        'path': str(md_file),
-                        'content': result.document.export_to_markdown(),
-                        'name': result.document.name,
-                        'kb_dir': str(kb_dir)
-                    }
+        # Use parallel processing for CPU-bound document conversion
+        max_workers = min(cpu_count(), 8)  # Cap at 8 to avoid overwhelming system
 
-                    # Build simple word index
-                    content_lower = new_documents[doc_id]['content'].lower()
-                    words = content_lower.split()
-                    for word in set(words):
-                        if word not in new_index:
-                            new_index[word] = []
-                        new_index[word].append(doc_id)
+        if len(all_md_files) > 1 and max_workers > 1:
+            logger.info(f"Using {max_workers} parallel workers for document processing")
+            if self.config.verbose:
+                print(f"   Using {max_workers} parallel workers for faster ingestion")
 
-                    logger.debug(f"Ingested: {doc_id}")
+            # Prepare arguments for parallel processing
+            process_args = [(kb_dir, md_file, use_fallback) for kb_dir, md_file in all_md_files]
+
+            # Process documents in parallel
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all document conversions
+                futures = {
+                    executor.submit(_process_single_document, args): args
+                    for args in process_args
+                }
+
+                # Collect results as they complete
+                completed = 0
+                for future in as_completed(futures):
+                    completed += 1
+                    args = futures[future]
+                    kb_dir, md_file, _ = args
+
+                    self._report_progress(f"Processing {md_file.name}", completed, len(all_md_files))
+
+                    try:
+                        doc_data = future.result()
+                        if doc_data:
+                            doc_id = doc_data['doc_id']
+
+                            # Store document
+                            new_documents[doc_id] = {
+                                'path': doc_data['path'],
+                                'content': doc_data['content'],
+                                'name': doc_data['name'],
+                                'kb_dir': doc_data['kb_dir']
+                            }
+
+                            # Build inverted index from words
+                            for word in doc_data['words']:
+                                if word not in new_index:
+                                    new_index[word] = []
+                                new_index[word].append(doc_id)
+
+                            logger.debug(f"Ingested: {doc_id}")
+                            if self.config.verbose:
+                                print(f"   ✅ Ingested: {doc_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to process {md_file}: {e}", exc_info=True)
+                        if self.config.verbose:
+                            print(f"   ❌ Failed to process {md_file}: {e}")
+        else:
+            # Fallback to sequential processing for small datasets
+            logger.info("Using sequential processing (small dataset or single worker)")
+            for i, (kb_dir, md_file) in enumerate(all_md_files, 1):
+                self._report_progress(f"Ingesting {md_file.name}", i, len(all_md_files))
+
+                try:
+                    result = self._convert_document_with_retry(md_file)
+                    if result.document:
+                        # Store document with relative path from its knowledge dir
+                        doc_id = str(md_file.relative_to(kb_dir.parent))
+                        new_documents[doc_id] = {
+                            'path': str(md_file),
+                            'content': result.document.export_to_markdown(),
+                            'name': result.document.name,
+                            'kb_dir': str(kb_dir)
+                        }
+
+                        # Build simple word index
+                        content_lower = new_documents[doc_id]['content'].lower()
+                        words = content_lower.split()
+                        for word in set(words):
+                            if word not in new_index:
+                                new_index[word] = []
+                            new_index[word].append(doc_id)
+
+                        logger.debug(f"Ingested: {doc_id}")
+                        if self.config.verbose:
+                            print(f"   ✅ Ingested: {doc_id}")
+
+                except Exception as e:
+                    logger.error(f"Failed to ingest {md_file}: {e}", exc_info=True)
                     if self.config.verbose:
-                        print(f"   ✅ Ingested: {doc_id}")
-
-            except Exception as e:
-                logger.error(f"Failed to ingest {md_file}: {e}", exc_info=True)
-                if self.config.verbose:
-                    print(f"   ❌ Failed to ingest {md_file}: {e}")
+                        print(f"   ❌ Failed to ingest {md_file}: {e}")
 
         # Atomically replace shared state with lock
         with self._lock:

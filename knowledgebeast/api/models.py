@@ -21,7 +21,9 @@ class QueryRequest(BaseModel):
         json_schema_extra={
             "example": {
                 "query": "How do I use librosa for audio analysis?",
-                "use_cache": True
+                "use_cache": True,
+                "limit": 10,
+                "offset": 0
             }
         }
     )
@@ -36,6 +38,17 @@ class QueryRequest(BaseModel):
     use_cache: bool = Field(
         default=True,
         description="Whether to use cached results if available"
+    )
+    limit: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Maximum number of results to return (1-100)"
+    )
+    offset: int = Field(
+        default=0,
+        ge=0,
+        description="Number of results to skip for pagination"
     )
 
     @field_validator('query')
