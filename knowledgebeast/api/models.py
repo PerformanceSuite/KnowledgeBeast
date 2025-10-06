@@ -4,8 +4,10 @@ All models use Pydantic v2 syntax with comprehensive validation,
 field descriptions, and examples for OpenAPI documentation.
 """
 
+import re
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field, ConfigDict
+from pathlib import Path
+from pydantic import BaseModel, Field, ConfigDict, field_validator, ValidationError
 
 
 # ============================================================================
@@ -36,6 +38,25 @@ class QueryRequest(BaseModel):
         description="Whether to use cached results if available"
     )
 
+    @field_validator('query')
+    @classmethod
+    def sanitize_query(cls, v: str) -> str:
+        """Sanitize query string to prevent injection attacks."""
+        # Remove potentially dangerous characters
+        dangerous_chars = ['<', '>', ';', '&', '|', '$', '`', '\n', '\r']
+        for char in dangerous_chars:
+            if char in v:
+                raise ValueError(f"Query contains invalid character: {char}")
+
+        # Strip whitespace
+        v = v.strip()
+
+        # Ensure not empty after stripping
+        if not v:
+            raise ValueError("Query cannot be empty or only whitespace")
+
+        return v
+
 
 class IngestRequest(BaseModel):
     """Request model for ingesting a single document."""
@@ -61,6 +82,35 @@ class IngestRequest(BaseModel):
         default=None,
         description="Optional metadata to attach to the document"
     )
+
+    @field_validator('file_path')
+    @classmethod
+    def validate_file_path(cls, v: str) -> str:
+        """Validate file path to prevent path traversal attacks."""
+        # Convert to Path object
+        try:
+            path = Path(v).resolve()
+        except Exception as e:
+            raise ValueError(f"Invalid file path: {e}")
+
+        # Check for path traversal attempts
+        if '..' in v:
+            raise ValueError("Path traversal detected: '..' not allowed")
+
+        # Ensure it's a valid file extension
+        allowed_extensions = {'.md', '.txt', '.pdf', '.docx', '.html', '.htm'}
+        if path.suffix.lower() not in allowed_extensions:
+            raise ValueError(f"Unsupported file type. Allowed: {', '.join(allowed_extensions)}")
+
+        # Check file exists
+        if not path.exists():
+            raise ValueError(f"File does not exist: {path}")
+
+        # Check it's a file (not directory)
+        if not path.is_file():
+            raise ValueError(f"Path is not a file: {path}")
+
+        return str(path)
 
 
 class BatchIngestRequest(BaseModel):
