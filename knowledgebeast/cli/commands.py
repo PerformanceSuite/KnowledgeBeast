@@ -16,7 +16,7 @@ from rich.prompt import Confirm
 
 from knowledgebeast import __version__, __description__
 from knowledgebeast.core.config import KnowledgeBeastConfig
-from knowledgebeast.core.engine import KnowledgeBeast
+from knowledgebeast.core.engine import KnowledgeBase
 from knowledgebeast.utils.logging import setup_logging
 
 console = Console()
@@ -56,7 +56,7 @@ def init(ctx: click.Context, path: str, name: Optional[str]) -> None:
         config.create_directories()
 
         progress.update(task, advance=1, description="Initializing knowledge base...")
-        with KnowledgeBeast(config) as kb:
+        with KnowledgeBase(config) as kb:
             stats = kb.get_stats()
             progress.update(task, advance=1, description="Complete!")
 
@@ -102,7 +102,7 @@ def ingest(ctx: click.Context, file_path: Path, data_dir: Path) -> None:
     ) as progress:
         task = progress.add_task(f"Ingesting {file_path.name}...", total=100)
 
-        with KnowledgeBeast(config) as kb:
+        with KnowledgeBase(config) as kb:
             try:
                 chunks = kb.ingest_document(file_path)
                 progress.update(task, completed=100)
@@ -150,7 +150,7 @@ def add(ctx: click.Context, file_or_dir: Path, recursive: bool, data_dir: Path) 
         added_count = 0
         failed_count = 0
 
-        with KnowledgeBeast(config) as kb:
+        with KnowledgeBase(config) as kb:
             for file_path in files_to_add:
                 try:
                     progress.update(task, description=f"Processing {file_path.name}...")
@@ -201,7 +201,7 @@ def query(
     config = KnowledgeBeastConfig(data_dir=data_dir)
 
     with console.status("[bold cyan]Searching...", spinner="dots"):
-        with KnowledgeBeast(config) as kb:
+        with KnowledgeBase(config) as kb:
             try:
                 results = kb.query(query_text, n_results=n_results, use_cache=not no_cache)
             except Exception as e:
@@ -246,7 +246,7 @@ def stats(ctx: click.Context, data_dir: Path, detailed: bool) -> None:
     """Show knowledge base statistics with Rich tables."""
     config = KnowledgeBeastConfig(data_dir=data_dir)
 
-    with KnowledgeBeast(config) as kb:
+    with KnowledgeBase(config) as kb:
         stats = kb.get_stats()
 
         # Main statistics table
@@ -287,7 +287,7 @@ def clear(ctx: click.Context, data_dir: Path) -> None:
     config = KnowledgeBeastConfig(data_dir=data_dir)
 
     with console.status("[bold yellow]Clearing knowledge base...", spinner="dots"):
-        with KnowledgeBeast(config) as kb:
+        with KnowledgeBase(config) as kb:
             kb.clear()
 
     console.print("[green]✓[/green] Knowledge base cleared successfully")
@@ -311,7 +311,7 @@ def clear_cache(ctx: click.Context, data_dir: Path, yes: bool) -> None:
     config = KnowledgeBeastConfig(data_dir=data_dir)
 
     with console.status("[bold cyan]Clearing cache...", spinner="dots"):
-        with KnowledgeBeast(config) as kb:
+        with KnowledgeBase(config) as kb:
             cleared = kb.clear_cache()
 
     console.print(f"[green]✓[/green] Cleared {cleared} cached entries")
@@ -338,7 +338,7 @@ def warm(ctx: click.Context, data_dir: Path) -> None:
     ) as progress:
         task = progress.add_task("Warming cache...", total=100)
 
-        with KnowledgeBeast(config) as kb:
+        with KnowledgeBase(config) as kb:
             # Trigger warming
             kb.warm_cache()
             progress.update(task, completed=100)
@@ -368,7 +368,7 @@ def health(ctx: click.Context, data_dir: Path) -> None:
 
         # Check knowledge base
         try:
-            with KnowledgeBeast(config) as kb:
+            with KnowledgeBase(config) as kb:
                 stats = kb.get_stats()
                 checks.append(("Knowledge Base", True, f"{stats['total_documents']} documents"))
         except Exception as e:
@@ -419,7 +419,7 @@ def heartbeat(ctx: click.Context, action: str, data_dir: Path, interval: int) ->
     """Manage background heartbeat process."""
     config = KnowledgeBeastConfig(data_dir=data_dir)
 
-    with KnowledgeBeast(config) as kb:
+    with KnowledgeBase(config) as kb:
         if action == 'start':
             kb.start_heartbeat(interval)
             console.print(f"[green]✓[/green] Heartbeat started with {interval}s interval")

@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import Depends
 
 from knowledgebeast.core.config import KnowledgeBeastConfig
-from knowledgebeast.core.engine import KnowledgeBeast
+from knowledgebeast.core.engine import KnowledgeBase
 
 # Global engine instance
 _engine: Optional[KnowledgeBeast] = None
@@ -26,7 +26,7 @@ def get_engine(config: Optional[KnowledgeBeastConfig] = None) -> KnowledgeBeast:
         ```python
         from fastapi import FastAPI, Depends
         from knowledgebeast.integrations.fastapi import get_engine
-        from knowledgebeast.core.engine import KnowledgeBeast
+        from knowledgebeast.core.engine import KnowledgeBase
         
         app = FastAPI()
         
@@ -37,7 +37,7 @@ def get_engine(config: Optional[KnowledgeBeastConfig] = None) -> KnowledgeBeast:
     """
     global _engine
     if _engine is None:
-        _engine = KnowledgeBeast(config)
+        _engine = KnowledgeBase(config)
     return _engine
 
 

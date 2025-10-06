@@ -3,7 +3,7 @@
 from typing import Optional
 
 from knowledgebeast.core.config import KnowledgeBeastConfig
-from knowledgebeast.core.engine import KnowledgeBeast
+from knowledgebeast.core.engine import KnowledgeBase
 
 
 class KnowledgeBeastFlask:
@@ -47,7 +47,7 @@ class KnowledgeBeastFlask:
         Args:
             app: Flask application instance
         """
-        self._engine = KnowledgeBeast(self.config)
+        self._engine = KnowledgeBase(self.config)
         
         # Store reference in app extensions
         if not hasattr(app, "extensions"):
@@ -58,7 +58,7 @@ class KnowledgeBeastFlask:
     def engine(self) -> KnowledgeBeast:
         """Get the KnowledgeBeast engine instance."""
         if self._engine is None:
-            self._engine = KnowledgeBeast(self.config)
+            self._engine = KnowledgeBase(self.config)
         return self._engine
     
     def query(self, *args, **kwargs):
