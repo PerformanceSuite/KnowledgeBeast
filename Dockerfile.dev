@@ -1,0 +1,47 @@
+# Development Dockerfile for KnowledgeBeast
+FROM python:3.11-slim
+
+# Set development environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=0 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    KB_DATA_DIR=/data \
+    KB_CONFIG_DIR=/config \
+    KB_LOG_LEVEL=DEBUG
+
+# Install development dependencies including debugging tools
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    git \
+    vim \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Copy dependency files
+COPY requirements.txt requirements-dev.txt ./
+
+# Install all dependencies including dev dependencies
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install -r requirements.txt && \
+    pip install -r requirements-dev.txt && \
+    pip install debugpy ipython
+
+# Copy application code
+COPY knowledgebeast/ ./knowledgebeast/
+COPY pyproject.toml setup.py ./
+
+# Install package in editable mode for hot reload
+RUN pip install -e .
+
+# Create necessary directories
+RUN mkdir -p /data /config /app/logs
+
+# Expose API and debug ports
+EXPOSE 8000 5678
+
+# Default command with hot reload
+CMD ["uvicorn", "knowledgebeast.api.app:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

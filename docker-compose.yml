@@ -1,25 +1,101 @@
 version: '3.8'
 
 services:
+  # Main KnowledgeBeast API service
   knowledgebeast:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     image: knowledgebeast:latest
     container_name: knowledgebeast
     ports:
       - "8000:8000"
     volumes:
-      - ./data:/app/data
+      - ./data:/data
+      - ./config:/config
+      - kb_logs:/app/logs
     environment:
-      - KB_DATA_DIR=/app/data
-      - KB_LOG_LEVEL=INFO
+      # Application settings
+      - KB_DATA_DIR=/data
+      - KB_CONFIG_DIR=/config
+      - KB_LOG_LEVEL=${KB_LOG_LEVEL:-INFO}
+      - KB_DEBUG=${KB_DEBUG:-false}
+
+      # API settings
+      - KB_API_HOST=0.0.0.0
+      - KB_API_PORT=8000
+      - KB_API_WORKERS=${KB_API_WORKERS:-1}
+      - KB_API_CORS_ORIGINS=${KB_API_CORS_ORIGINS:-*}
+
+      # Redis settings (optional - for future caching)
+      - KB_REDIS_ENABLED=${KB_REDIS_ENABLED:-false}
+      - KB_REDIS_HOST=redis
+      - KB_REDIS_PORT=6379
+      - KB_REDIS_DB=${KB_REDIS_DB:-0}
+
+      # Vector database settings
+      - KB_VECTOR_DB_PATH=/data/chroma_db
+      - KB_EMBEDDING_MODEL=${KB_EMBEDDING_MODEL:-all-MiniLM-L6-v2}
+
+      # Performance settings
+      - KB_MAX_UPLOAD_SIZE=${KB_MAX_UPLOAD_SIZE:-10485760}
+      - KB_CHUNK_SIZE=${KB_CHUNK_SIZE:-1000}
+      - KB_CHUNK_OVERLAP=${KB_CHUNK_OVERLAP:-200}
+    env_file:
+      - .env
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 15s
+    networks:
+      - knowledgebeast-network
+    depends_on:
+      redis:
+        condition: service_healthy
+    labels:
+      - "com.knowledgebeast.description=KnowledgeBeast API Service"
+      - "com.knowledgebeast.service=api"
+      - "com.knowledgebeast.version=0.1.0"
+
+  # Redis service (optional - for future caching and session management)
+  redis:
+    image: redis:7-alpine
+    container_name: knowledgebeast-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - knowledgebeast-network
+    labels:
+      - "com.knowledgebeast.description=Redis Cache Service"
+      - "com.knowledgebeast.service=cache"
+
+volumes:
+  # Persistent storage for knowledge base data
+  kb_data:
+    driver: local
+
+  # Redis data persistence
+  redis_data:
+    driver: local
+
+  # Application logs
+  kb_logs:
+    driver: local
 
 networks:
-  default:
-    name: knowledgebeast-network
+  knowledgebeast-network:
+    driver: bridge
+    labels:
+      - "com.knowledgebeast.network=main"

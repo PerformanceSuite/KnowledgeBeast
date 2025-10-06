@@ -1,0 +1,66 @@
+version: '3.8'
+
+# Development Docker Compose Configuration
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  knowledgebeast:
+    # Override build for development
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      args:
+        - DEV_MODE=true
+    image: knowledgebeast:dev
+    container_name: knowledgebeast-dev
+
+    # Mount source code for hot reload
+    volumes:
+      - ./knowledgebeast:/app/knowledgebeast
+      - ./tests:/app/tests
+      - ./data:/data
+      - ./config:/config
+      - ./pyproject.toml:/app/pyproject.toml
+      - ./requirements.txt:/app/requirements.txt
+      - ./requirements-dev.txt:/app/requirements-dev.txt
+
+    # Override environment for development
+    environment:
+      - KB_LOG_LEVEL=DEBUG
+      - KB_DEBUG=true
+      - KB_API_RELOAD=true
+      - PYTHONDONTWRITEBYTECODE=0
+
+    # Override command for hot reload
+    command: >
+      uvicorn knowledgebeast.api.app:app
+      --host 0.0.0.0
+      --port 8000
+      --reload
+      --reload-dir /app/knowledgebeast
+      --log-level debug
+
+    # Expose additional ports for debugging
+    ports:
+      - "8000:8000"
+      - "5678:5678"  # debugpy port
+
+    # Disable restart in dev mode
+    restart: "no"
+
+    # Run as root in dev for easier file permissions
+    user: root
+
+    labels:
+      - "com.knowledgebeast.environment=development"
+
+  redis:
+    # Keep Redis simple in dev
+    ports:
+      - "6379:6379"
+
+    # Disable persistence in dev for faster startup
+    command: redis-server --save ""
+
+    labels:
+      - "com.knowledgebeast.environment=development"
