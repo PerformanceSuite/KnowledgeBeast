@@ -10,8 +10,10 @@ from knowledgebeast import __version__
 
 @pytest.fixture
 def client():
-    """Create FastAPI test client."""
-    return TestClient(app)
+    """Create FastAPI test client with authentication."""
+    client = TestClient(app)
+    client.headers.update({"X-API-Key": "test-api-key-12345"})
+    return client
 
 
 @pytest.fixture
@@ -49,7 +51,7 @@ class TestHealthEndpoint:
 
     def test_health_endpoint(self, client):
         """Test health endpoint returns 200."""
-        response = client.get("/health")
+        response = client.get("/api/v1/health")
         assert response.status_code == 200
 
         data = response.json()
@@ -62,7 +64,7 @@ class TestHealthEndpoint:
         """Test health status when KB initialized."""
         mock_get_kb.return_value = mock_kb
 
-        response = client.get("/health")
+        response = client.get("/api/v1/health")
         assert response.status_code == 200
 
         data = response.json()
@@ -74,7 +76,7 @@ class TestHealthEndpoint:
         """Test health status when KB fails to initialize."""
         mock_get_kb.side_effect = Exception("Init failed")
 
-        response = client.get("/health")
+        response = client.get("/api/v1/health")
         assert response.status_code == 200
 
         data = response.json()
@@ -91,7 +93,7 @@ class TestStatsEndpoint:
         mock_kb.get_stats.return_value = mock_kb.stats
         mock_get_kb.return_value = mock_kb
 
-        response = client.get("/stats")
+        response = client.get("/api/v1/stats")
         assert response.status_code == 200
 
         data = response.json()
@@ -120,7 +122,7 @@ class TestQueryEndpoint:
         mock_kb._generate_cache_key.return_value = "test_key"
         mock_get_kb.return_value = mock_kb
 
-        response = client.post("/query", json={"query": "test query"})
+        response = client.post("/api/v1/query", json={"query": "test query"})
         assert response.status_code == 200
 
         data = response.json()
@@ -137,7 +139,7 @@ class TestQueryEndpoint:
         mock_kb.query.side_effect = ValueError("Search terms cannot be empty")
         mock_get_kb.return_value = mock_kb
 
-        response = client.post("/query", json={"query": ""})
+        response = client.post("/api/v1/query", json={"query": ""})
         assert response.status_code == 400
 
     @patch('knowledgebeast.api.routes.get_kb_instance')
@@ -147,7 +149,7 @@ class TestQueryEndpoint:
         mock_kb._generate_cache_key.return_value = "test_key"
         mock_get_kb.return_value = mock_kb
 
-        response = client.post("/query", json={
+        response = client.post("/api/v1/query", json={
             "query": "test",
             "use_cache": False
         })
@@ -173,7 +175,7 @@ class TestIngestEndpoint:
 
         mock_get_kb.return_value = mock_kb
 
-        response = client.post("/ingest", json={
+        response = client.post("/api/v1/ingest", json={
             "file_path": "/path/to/test.md"
         })
         assert response.status_code == 200
@@ -192,7 +194,7 @@ class TestIngestEndpoint:
 
         mock_get_kb.return_value = mock_kb
 
-        response = client.post("/ingest", json={
+        response = client.post("/api/v1/ingest", json={
             "file_path": "/nonexistent/file.md"
         })
         assert response.status_code == 404
@@ -209,7 +211,7 @@ class TestIngestEndpoint:
             mock_file.is_file.return_value = True
             mock_path.return_value = mock_file
 
-            response = client.post("/batch-ingest", json={
+            response = client.post("/api/v1/batch-ingest", json={
                 "file_paths": ["/file1.md", "/file2.md"]
             })
             assert response.status_code == 200
@@ -228,7 +230,7 @@ class TestWarmEndpoint:
         mock_kb.warm_up.return_value = None
         mock_get_kb.return_value = mock_kb
 
-        response = client.post("/warm", json={"force_rebuild": False})
+        response = client.post("/api/v1/warm", json={"force_rebuild": False})
         assert response.status_code == 200
 
         data = response.json()
@@ -244,7 +246,7 @@ class TestWarmEndpoint:
         """Test warm endpoint with force rebuild."""
         mock_get_kb.return_value = mock_kb
 
-        response = client.post("/warm", json={"force_rebuild": True})
+        response = client.post("/api/v1/warm", json={"force_rebuild": True})
         assert response.status_code == 200
 
         # Verify rebuild was called
@@ -260,7 +262,7 @@ class TestCacheEndpoint:
         mock_kb.clear_cache.return_value = None
         mock_get_kb.return_value = mock_kb
 
-        response = client.post("/cache/clear")
+        response = client.post("/api/v1/cache/clear")
         assert response.status_code == 200
 
         data = response.json()
@@ -277,7 +279,7 @@ class TestHeartbeatEndpoints:
     @patch('knowledgebeast.api.routes._heartbeat_instance', None)
     def test_heartbeat_status_not_running(self, client):
         """Test heartbeat status when not running."""
-        response = client.get("/heartbeat/status")
+        response = client.get("/api/v1/heartbeat/status")
         assert response.status_code == 200
 
         data = response.json()
@@ -292,7 +294,7 @@ class TestHeartbeatEndpoints:
         mock_heartbeat_class.return_value = mock_heartbeat
         mock_get_kb.return_value = mock_kb
 
-        response = client.post("/heartbeat/start")
+        response = client.post("/api/v1/heartbeat/start")
         assert response.status_code == 200
 
         data = response.json()
@@ -304,7 +306,7 @@ class TestHeartbeatEndpoints:
         """Test stopping heartbeat."""
         mock_instance.is_running.return_value = True
 
-        response = client.post("/heartbeat/stop")
+        response = client.post("/api/v1/heartbeat/stop")
         assert response.status_code == 200
 
         data = response.json()
@@ -319,7 +321,7 @@ class TestCollectionsEndpoints:
         """Test listing collections."""
         mock_get_kb.return_value = mock_kb
 
-        response = client.get("/collections")
+        response = client.get("/api/v1/collections")
         assert response.status_code == 200
 
         data = response.json()
@@ -332,7 +334,7 @@ class TestCollectionsEndpoints:
         """Test getting collection info."""
         mock_get_kb.return_value = mock_kb
 
-        response = client.get("/collections/default")
+        response = client.get("/api/v1/collections/default")
         assert response.status_code == 200
 
         data = response.json()
@@ -344,7 +346,7 @@ class TestCollectionsEndpoints:
         """Test getting nonexistent collection returns 404."""
         mock_get_kb.return_value = mock_kb
 
-        response = client.get("/collections/nonexistent")
+        response = client.get("/api/v1/collections/nonexistent")
         assert response.status_code == 404
 
 
@@ -359,7 +361,7 @@ class TestErrorHandling:
         mock_kb._generate_cache_key.return_value = "key"
         mock_get_kb.return_value = mock_kb
 
-        response = client.post("/query", json={"query": "test"})
+        response = client.post("/api/v1/query", json={"query": "test"})
         assert response.status_code == 500
 
     @patch('knowledgebeast.api.routes.get_kb_instance')
@@ -369,7 +371,7 @@ class TestErrorHandling:
         mock_kb.get_stats.side_effect = Exception("Stats error")
         mock_get_kb.return_value = mock_kb
 
-        response = client.get("/stats")
+        response = client.get("/api/v1/stats")
         assert response.status_code == 500
 
 
@@ -379,12 +381,12 @@ class TestValidation:
     def test_query_validation_empty_query(self, client):
         """Test query validation rejects empty query."""
         # Pydantic validation should catch this
-        response = client.post("/query", json={"query": ""})
+        response = client.post("/api/v1/query", json={"query": ""})
         # May be 422 (validation error) or 400 depending on where it's caught
         assert response.status_code in [400, 422]
 
     def test_batch_ingest_validation(self, client):
         """Test batch ingest validation."""
         # Empty file_paths list should fail
-        response = client.post("/batch-ingest", json={"file_paths": []})
+        response = client.post("/api/v1/batch-ingest", json={"file_paths": []})
         assert response.status_code == 422  # Pydantic validation error
