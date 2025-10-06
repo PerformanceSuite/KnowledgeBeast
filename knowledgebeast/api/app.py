@@ -12,10 +12,11 @@ Production-ready FastAPI application with:
 
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import AsyncIterator
+from typing import AsyncIterator, Union
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -49,9 +50,9 @@ from knowledgebeast.core.constants import (
     DEFAULT_RATE_LIMIT_STORAGE,
     ENV_PREFIX,
     HTTP_404_MESSAGE,
-    HTTP_422_MESSAGE,
-    HTTP_500_DETAIL,
     HTTP_500_MESSAGE,
+    HTTP_500_DETAIL,
+    HTTP_422_MESSAGE
 )
 
 # Rate limiting configuration
@@ -258,7 +259,7 @@ def register_error_handlers(app: FastAPI) -> None:
     async def not_found_handler(request: Request, exc: Exception) -> JSONResponse:
         """Handle 404 Not Found errors."""
         # Don't expose internal details in error message
-        error_detail = str(exc) if str(exc) and "/" not in str(exc) else None
+        error_detail = str(exc) if str(exc) and not "/" in str(exc) else None
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
             content=ErrorResponse(

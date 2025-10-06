@@ -14,26 +14,25 @@ Features:
 - Enhanced error handling and recovery
 """
 
-import hashlib
-import json
-import logging
-import threading
-import time
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
-
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
-
-from knowledgebeast.core.cache import LRUCache
+import json
+import pickle
+import time
+import hashlib
+import threading
+import logging
+from typing import Dict, List, Tuple, Optional, Callable
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from knowledgebeast.core.config import KnowledgeBeastConfig
+from knowledgebeast.core.cache import LRUCache
 from knowledgebeast.core.constants import (
-    CACHE_TEMP_SUFFIX,
-    ERR_EMPTY_SEARCH_TERMS,
-    JSON_INDENT,
     MAX_RETRY_ATTEMPTS,
-    RETRY_MAX_WAIT_SECONDS,
     RETRY_MIN_WAIT_SECONDS,
+    RETRY_MAX_WAIT_SECONDS,
     RETRY_MULTIPLIER,
+    CACHE_TEMP_SUFFIX,
+    JSON_INDENT,
+    ERR_EMPTY_SEARCH_TERMS
 )
 
 # Configure logging
@@ -180,7 +179,7 @@ class KnowledgeBase:
             for i, query in enumerate(self.config.warming_queries, 1):
                 self._report_progress(f"Warming query: {query[:50]}...", i, total_queries)
                 try:
-                    self.query(query, use_cache=False)  # Populate cache
+                    self.query(query, use_cache=True)  # Populate cache - FIXED!
                     self.stats['warm_queries'] += 1
                 except Exception as e:
                     logger.warning(f"Warming query failed '{query}': {e}")
@@ -223,28 +222,44 @@ class KnowledgeBase:
                 if not cache_is_stale:
                     # Cache is valid, use it
                     cached_data = None
+                    migrated = False
 
-                    # Use only JSON format (secure, no RCE risk)
+                    # Try JSON first (secure format)
                     try:
                         with open(cache_path, 'r', encoding='utf-8') as f:
                             cached_data = json.load(f)
                             logger.info("Loaded cache from JSON format")
                     except (json.JSONDecodeError, UnicodeDecodeError):
-                        # Legacy pickle file detected - warn and rebuild
-                        logger.warning(
-                            "Detected legacy pickle cache file. For security, pickle format is no longer supported. "
-                            "Cache will be rebuilt in secure JSON format."
-                        )
+                        # Legacy pickle file - migrate it
+                        logger.warning("Detected legacy pickle cache, migrating to JSON")
                         if self.config.verbose:
-                            print("⚠️  Legacy pickle cache detected - rebuilding in secure JSON format...")
-                        # Force rebuild by falling through to the rebuild path
-                        cached_data = None
+                            print("🔄 Migrating legacy cache to secure JSON format...")
+
+                        try:
+                            with open(cache_path, 'rb') as f:
+                                cached_data = pickle.load(f)
+                            migrated = True
+                        except Exception as pickle_error:
+                            logger.error(f"Failed to load legacy pickle cache: {pickle_error}")
+                            raise
 
                     if cached_data:
                         self.documents = cached_data['documents']
                         self.index = cached_data['index']
-                        self.stats['total_documents'] = len(self.documents)
-                        self.stats['total_terms'] = len(self.index)
+
+                        # If we migrated from pickle, save as JSON
+                        if migrated:
+                            try:
+                                with open(cache_path, 'w', encoding='utf-8') as f:
+                                    json.dump(cached_data, f, indent=2)
+                                logger.info("Successfully migrated cache to JSON format")
+                                if self.config.verbose:
+                                    print("✅ Cache migrated to JSON format\n")
+                            except Exception as save_error:
+                                logger.error(f"Failed to save migrated cache: {save_error}")
+
+                    self.stats['total_documents'] = len(self.documents)
+                    self.stats['total_terms'] = len(self.index)
 
                     logger.info(f"Loaded knowledge base from cache - {len(self.documents)} documents, {len(self.index)} terms")
                     if self.config.verbose:
@@ -296,14 +311,18 @@ class KnowledgeBase:
             # Check if file count changed
             cached_data = None
 
-            # Use only JSON format (secure)
+            # Try JSON first (secure format)
             try:
                 with open(cache_path, 'r', encoding='utf-8') as f:
                     cached_data = json.load(f)
-            except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                # Not a valid JSON cache (possibly legacy pickle)
-                logger.warning(f"Cache file is not valid JSON (possibly legacy pickle): {e}")
-                return True  # Consider stale, will trigger rebuild
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                # Legacy pickle file
+                try:
+                    with open(cache_path, 'rb') as f:
+                        cached_data = pickle.load(f)
+                except Exception as pickle_error:
+                    logger.error(f"Failed to load cache for staleness check: {pickle_error}")
+                    return True
 
             if cached_data and len(cached_data['documents']) != len(all_md_files):
                 logger.debug(f"Cache is stale (file count changed: {len(cached_data['documents'])} → {len(all_md_files)})")
@@ -409,7 +428,7 @@ class KnowledgeBase:
 
         logger.info(f"Ingestion complete! {len(new_documents)} documents, {len(new_index)} terms")
         if self.config.verbose:
-            print("\n✅ Ingestion complete!")
+            print(f"\n✅ Ingestion complete!")
             print(f"   - {len(self.documents)} documents indexed")
             print(f"   - {len(self.index)} unique terms\n")
 
@@ -466,7 +485,7 @@ class KnowledgeBase:
         # Generate cache key from query
         cache_key = self._generate_cache_key(search_terms)
 
-        # Check cache with LRU update (cache is thread-safe)
+        # Check cache (LRU cache is now thread-safe)
         if use_cache:
             cached_result = self.query_cache.get(cache_key)
             if cached_result is not None:
@@ -477,24 +496,34 @@ class KnowledgeBase:
         with self._lock:
             self.stats['cache_misses'] += 1
 
-        # Execute query (need lock for reading index and documents)
+        # Execute query with minimal lock scope using snapshot pattern
         try:
             search_terms_list = search_terms.lower().split() if isinstance(search_terms, str) else search_terms
 
-            # Find documents containing search terms (read-only, needs lock)
+            # Create index snapshot with minimal lock time
+            # This allows concurrent queries to proceed without blocking each other
             with self._lock:
-                matches = {}
-                for term in search_terms_list:
-                    if term in self.index:
-                        for doc_id in self.index[term]:
-                            matches[doc_id] = matches.get(doc_id, 0) + 1
+                index_snapshot = {
+                    term: list(self.index.get(term, []))
+                    for term in search_terms_list
+                }
 
-                # Sort by relevance (number of matching terms)
-                sorted_matches = sorted(matches.items(), key=lambda x: x[1], reverse=True)
-                # Deep copy document data to avoid returning references
-                results = [(doc_id, dict(self.documents[doc_id])) for doc_id, score in sorted_matches]
+            # Search WITHOUT holding lock - this is the performance optimization!
+            # Multiple queries can now execute in parallel
+            matches = {}
+            for term, doc_ids in index_snapshot.items():
+                for doc_id in doc_ids:
+                    matches[doc_id] = matches.get(doc_id, 0) + 1
 
-            # Cache results with LRU (cache is thread-safe)
+            # Sort by relevance (number of matching terms)
+            sorted_matches = sorted(matches.items(), key=lambda x: x[1], reverse=True)
+
+            # Get document data with single lock
+            with self._lock:
+                results = [(doc_id, dict(self.documents[doc_id]))
+                           for doc_id, _ in sorted_matches]
+
+            # Cache results (LRU cache is thread-safe)
             if use_cache:
                 self.query_cache.put(cache_key, results)
 
@@ -540,10 +569,9 @@ class KnowledgeBase:
             query: Query string
 
         Returns:
-            MD5 hash of normalized query (not for security, just cache key)
+            MD5 hash of normalized query
         """
-        # MD5 is safe for cache keys (not cryptographic use)
-        return hashlib.md5(query.lower().strip().encode(), usedforsecurity=False).hexdigest()
+        return hashlib.md5(query.lower().strip().encode()).hexdigest()
 
     def get_stats(self) -> Dict:
         """
