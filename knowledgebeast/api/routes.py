@@ -15,40 +15,39 @@ Provides 12 production-ready endpoints:
 12. GET /collections/{name} - Get collection info
 """
 
-import asyncio
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 from knowledgebeast import __version__
-from knowledgebeast.core.engine import KnowledgeBase
-from knowledgebeast.core.config import KnowledgeBeastConfig
-from knowledgebeast.core.heartbeat import KnowledgeBaseHeartbeat
+from knowledgebeast.api.auth import get_api_key
 from knowledgebeast.api.models import (
+    BatchIngestRequest,
+    BatchIngestResponse,
+    CacheClearResponse,
+    CollectionInfo,
+    CollectionsResponse,
+    HealthResponse,
+    HeartbeatActionResponse,
+    HeartbeatStatusResponse,
+    IngestRequest,
+    IngestResponse,
     QueryRequest,
     QueryResponse,
     QueryResult,
-    IngestRequest,
-    IngestResponse,
-    BatchIngestRequest,
-    BatchIngestResponse,
+    StatsResponse,
     WarmRequest,
     WarmResponse,
-    HealthResponse,
-    StatsResponse,
-    HeartbeatStatusResponse,
-    HeartbeatActionResponse,
-    CacheClearResponse,
-    CollectionsResponse,
-    CollectionInfo,
 )
+from knowledgebeast.core.config import KnowledgeBeastConfig
+from knowledgebeast.core.engine import KnowledgeBase
+from knowledgebeast.core.heartbeat import KnowledgeBaseHeartbeat
 
 logger = logging.getLogger(__name__)
 
@@ -57,9 +56,6 @@ router = APIRouter()
 
 # Initialize rate limiter
 limiter = Limiter(key_func=get_remote_address)
-
-# Thread pool for blocking operations
-_executor = ThreadPoolExecutor(max_workers=4)
 
 # Global instances (singleton pattern)
 _kb_instance: Optional[KnowledgeBase] = None
@@ -87,7 +83,7 @@ def get_kb_instance() -> KnowledgeBase:
             logger.error(f"Failed to initialize KnowledgeBase: {e}", exc_info=True)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to initialize knowledge base: {str(e)}"
+                detail=f"Failed to initialize knowledge base: {str(e)}",
             )
 
     return _kb_instance
@@ -116,15 +112,16 @@ def cleanup_heartbeat() -> None:
 # Health Endpoints
 # ============================================================================
 
+
 @router.get(
     "/health",
     response_model=HealthResponse,
     tags=["health"],
     summary="Health check",
-    description="Check API health status and basic system information"
+    description="Check API health status and basic system information",
 )
 @limiter.limit("100/minute")
-async def health_check(request: Request) -> HealthResponse:
+async def health_check(request: Request, api_key: str = Depends(get_api_key)) -> HealthResponse:
     """Health check endpoint with deep system checks.
 
     Checks:
@@ -172,6 +169,7 @@ async def health_check(request: Request) -> HealthResponse:
         # Optional: Check memory usage if psutil available
         try:
             import psutil
+
             process = psutil.Process()
             mem_info = process.memory_info()
             mem_mb = mem_info.rss / 1024 / 1024
@@ -199,12 +197,12 @@ async def health_check(request: Request) -> HealthResponse:
         status=status,
         version=__version__,
         kb_initialized=kb_initialized,
-        timestamp=datetime.utcnow().isoformat() + "Z"
+        timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     )
 
     # Add issues to response if any (add as extra field if needed)
-    if issues and hasattr(response, '__dict__'):
-        response.__dict__['issues'] = issues
+    if issues and hasattr(response, "__dict__"):
+        response.__dict__["issues"] = issues
 
     return response
 
@@ -214,10 +212,10 @@ async def health_check(request: Request) -> HealthResponse:
     response_model=StatsResponse,
     tags=["health"],
     summary="Get statistics",
-    description="Get detailed knowledge base statistics and performance metrics"
+    description="Get detailed knowledge base statistics and performance metrics",
 )
 @limiter.limit("60/minute")
-async def get_stats(request: Request) -> StatsResponse:
+async def get_stats(request: Request, api_key: str = Depends(get_api_key)) -> StatsResponse:
     """Get knowledge base statistics.
 
     Returns:
@@ -228,11 +226,7 @@ async def get_stats(request: Request) -> StatsResponse:
     """
     try:
         kb = get_kb_instance()
-        # Use executor to avoid blocking event loop
-        stats = await asyncio.get_event_loop().run_in_executor(
-            _executor,
-            kb.get_stats
-        )
+        stats = kb.get_stats()
 
         return StatsResponse(**stats)
 
@@ -240,7 +234,7 @@ async def get_stats(request: Request) -> StatsResponse:
         logger.error(f"Stats error: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get statistics: {str(e)}"
+            detail=f"Failed to get statistics: {str(e)}",
         )
 
 
@@ -248,17 +242,17 @@ async def get_stats(request: Request) -> StatsResponse:
 # Query Endpoints
 # ============================================================================
 
+
 @router.post(
     "/query",
     response_model=QueryResponse,
     tags=["query"],
     summary="Query knowledge base",
-    description="Search the knowledge base for relevant documents"
+    description="Search the knowledge base for relevant documents",
 )
 @limiter.limit("30/minute")
 async def query_knowledge_base(
-    request: Request,
-    query_request: QueryRequest
+    request: Request, query_request: QueryRequest, api_key: str = Depends(get_api_key)
 ) -> QueryResponse:
     """Query the knowledge base for relevant documents.
 
@@ -278,19 +272,8 @@ async def query_knowledge_base(
         cache_key = kb._generate_cache_key(query_request.query)
         was_cached = cache_key in kb.query_cache._cache
 
-        # Execute query using executor to avoid blocking event loop
-        results = await asyncio.get_event_loop().run_in_executor(
-            _executor,
-            kb.query,
-            query_request.query,
-            query_request.use_cache
-        )
-
-        # Apply pagination if specified
-        total = len(results)
-        offset = getattr(query_request, 'offset', 0)
-        limit = getattr(query_request, 'limit', total)
-        paginated_results = results[offset:offset + limit]
+        # Execute query
+        results = kb.query(query_request.query, use_cache=query_request.use_cache)
 
         # Convert results to QueryResult models
         query_results = [
@@ -299,28 +282,24 @@ async def query_knowledge_base(
                 content=doc["content"],
                 name=doc["name"],
                 path=doc["path"],
-                kb_dir=doc["kb_dir"]
+                kb_dir=doc["kb_dir"],
             )
-            for doc_id, doc in paginated_results
+            for doc_id, doc in results
         ]
 
         return QueryResponse(
             results=query_results,
             count=len(query_results),
             cached=was_cached,
-            query=query_request.query
+            query=query_request.query,
         )
 
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
         logger.error(f"Query error: {e}", exc_info=True)
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Query failed: {str(e)}"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Query failed: {str(e)}"
         )
 
 
@@ -328,17 +307,17 @@ async def query_knowledge_base(
 # Ingest Endpoints
 # ============================================================================
 
+
 @router.post(
     "/ingest",
     response_model=IngestResponse,
     tags=["ingest"],
     summary="Ingest single document",
-    description="Add a single document to the knowledge base"
+    description="Add a single document to the knowledge base",
 )
 @limiter.limit("20/minute")
 async def ingest_document(
-    request: Request,
-    ingest_request: IngestRequest
+    request: Request, ingest_request: IngestRequest, api_key: str = Depends(get_api_key)
 ) -> IngestResponse:
     """Ingest a single document into the knowledge base.
 
@@ -358,14 +337,12 @@ async def ingest_document(
         # Validate file exists
         if not file_path.exists():
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"File not found: {file_path}"
+                status_code=status.HTTP_404_NOT_FOUND, detail=f"File not found: {file_path}"
             )
 
         if not file_path.is_file():
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Path is not a file: {file_path}"
+                status_code=status.HTTP_400_BAD_REQUEST, detail=f"Path is not a file: {file_path}"
             )
 
         # Note: Current KnowledgeBase engine uses ingest_all() for directory ingestion
@@ -377,11 +354,8 @@ async def ingest_document(
             "Consider batch ingestion for better performance."
         )
 
-        # Trigger rebuild to include new file (non-blocking)
-        await asyncio.get_event_loop().run_in_executor(
-            _executor,
-            kb.rebuild_index
-        )
+        # Trigger rebuild to include new file
+        kb.rebuild_index()
 
         # Generate doc_id (similar to how engine does it)
         doc_id = str(file_path)
@@ -390,7 +364,7 @@ async def ingest_document(
             success=True,
             file_path=str(file_path),
             doc_id=doc_id,
-            message=f"Successfully ingested {file_path.name}"
+            message=f"Successfully ingested {file_path.name}",
         )
 
     except HTTPException:
@@ -398,8 +372,7 @@ async def ingest_document(
     except Exception as e:
         logger.error(f"Ingestion error: {e}", exc_info=True)
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ingestion failed: {str(e)}"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Ingestion failed: {str(e)}"
         )
 
 
@@ -408,12 +381,11 @@ async def ingest_document(
     response_model=BatchIngestResponse,
     tags=["ingest"],
     summary="Batch ingest documents",
-    description="Add multiple documents to the knowledge base in a single operation"
+    description="Add multiple documents to the knowledge base in a single operation",
 )
 @limiter.limit("10/minute")
 async def batch_ingest_documents(
-    request: Request,
-    batch_request: BatchIngestRequest
+    request: Request, batch_request: BatchIngestRequest, api_key: str = Depends(get_api_key)
 ) -> BatchIngestResponse:
     """Batch ingest multiple documents.
 
@@ -440,12 +412,9 @@ async def batch_ingest_documents(
             else:
                 successful += 1
 
-        # Rebuild index to include all files (non-blocking)
+        # Rebuild index to include all files
         if successful > 0:
-            await asyncio.get_event_loop().run_in_executor(
-                _executor,
-                kb.rebuild_index
-            )
+            kb.rebuild_index()
 
         total_files = len(batch_request.file_paths)
         failed = len(failed_files)
@@ -456,14 +425,14 @@ async def batch_ingest_documents(
             successful=successful,
             failed=failed,
             failed_files=failed_files,
-            message=f"Batch ingestion completed: {successful}/{total_files} successful"
+            message=f"Batch ingestion completed: {successful}/{total_files} successful",
         )
 
     except Exception as e:
         logger.error(f"Batch ingestion error: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Batch ingestion failed: {str(e)}"
+            detail=f"Batch ingestion failed: {str(e)}",
         )
 
 
@@ -471,17 +440,17 @@ async def batch_ingest_documents(
 # Management Endpoints
 # ============================================================================
 
+
 @router.post(
     "/warm",
     response_model=WarmResponse,
     tags=["management"],
     summary="Warm knowledge base",
-    description="Trigger knowledge base warming to reduce query latency"
+    description="Trigger knowledge base warming to reduce query latency",
 )
 @limiter.limit("10/minute")
 async def warm_knowledge_base(
-    request: Request,
-    warm_request: WarmRequest
+    request: Request, warm_request: WarmRequest, api_key: str = Depends(get_api_key)
 ) -> WarmResponse:
     """Trigger knowledge base warming.
 
@@ -499,18 +468,12 @@ async def warm_knowledge_base(
 
         start_time = time.time()
 
-        # Rebuild if requested (non-blocking)
+        # Rebuild if requested
         if warm_request.force_rebuild:
-            await asyncio.get_event_loop().run_in_executor(
-                _executor,
-                kb.rebuild_index
-            )
+            kb.rebuild_index()
 
-        # Warm up (non-blocking)
-        await asyncio.get_event_loop().run_in_executor(
-            _executor,
-            kb.warm_up
-        )
+        # Warm up
+        kb.warm_up()
 
         warm_time = time.time() - start_time
 
@@ -519,14 +482,13 @@ async def warm_knowledge_base(
             warm_time=warm_time,
             queries_executed=kb.stats.get("warm_queries", 0),
             documents_loaded=len(kb.documents),
-            message=f"Knowledge base warmed in {warm_time:.2f}s"
+            message=f"Knowledge base warmed in {warm_time:.2f}s",
         )
 
     except Exception as e:
         logger.error(f"Warming error: {e}", exc_info=True)
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Warming failed: {str(e)}"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Warming failed: {str(e)}"
         )
 
 
@@ -535,10 +497,10 @@ async def warm_knowledge_base(
     response_model=CacheClearResponse,
     tags=["management"],
     summary="Clear query cache",
-    description="Clear all cached query results"
+    description="Clear all cached query results",
 )
 @limiter.limit("20/minute")
-async def clear_cache(request: Request) -> CacheClearResponse:
+async def clear_cache(request: Request, api_key: str = Depends(get_api_key)) -> CacheClearResponse:
     """Clear query cache.
 
     Returns:
@@ -553,23 +515,20 @@ async def clear_cache(request: Request) -> CacheClearResponse:
         # Get count before clearing
         cleared_count = len(kb.query_cache)
 
-        # Clear cache (non-blocking)
-        await asyncio.get_event_loop().run_in_executor(
-            _executor,
-            kb.clear_cache
-        )
+        # Clear cache
+        kb.clear_cache()
 
         return CacheClearResponse(
             success=True,
             cleared_count=cleared_count,
-            message=f"Cache cleared: {cleared_count} entries removed"
+            message=f"Cache cleared: {cleared_count} entries removed",
         )
 
     except Exception as e:
         logger.error(f"Cache clear error: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Cache clear failed: {str(e)}"
+            detail=f"Cache clear failed: {str(e)}",
         )
 
 
@@ -577,15 +536,18 @@ async def clear_cache(request: Request) -> CacheClearResponse:
 # Heartbeat Endpoints
 # ============================================================================
 
+
 @router.get(
     "/heartbeat/status",
     response_model=HeartbeatStatusResponse,
     tags=["heartbeat"],
     summary="Get heartbeat status",
-    description="Get current heartbeat status and metrics"
+    description="Get current heartbeat status and metrics",
 )
 @limiter.limit("60/minute")
-async def get_heartbeat_status(request: Request) -> HeartbeatStatusResponse:
+async def get_heartbeat_status(
+    request: Request, api_key: str = Depends(get_api_key)
+) -> HeartbeatStatusResponse:
     """Get heartbeat status.
 
     Returns:
@@ -595,17 +557,14 @@ async def get_heartbeat_status(request: Request) -> HeartbeatStatusResponse:
 
     if _heartbeat_instance is None:
         return HeartbeatStatusResponse(
-            running=False,
-            interval=0,
-            heartbeat_count=0,
-            last_heartbeat=None
+            running=False, interval=0, heartbeat_count=0, last_heartbeat=None
         )
 
     return HeartbeatStatusResponse(
         running=_heartbeat_instance.is_running(),
         interval=_heartbeat_instance.interval,
         heartbeat_count=_heartbeat_instance.heartbeat_count,
-        last_heartbeat=None  # Could add timestamp tracking in heartbeat class
+        last_heartbeat=None,  # Could add timestamp tracking in heartbeat class
     )
 
 
@@ -614,10 +573,12 @@ async def get_heartbeat_status(request: Request) -> HeartbeatStatusResponse:
     response_model=HeartbeatActionResponse,
     tags=["heartbeat"],
     summary="Start heartbeat",
-    description="Start background heartbeat for continuous KB monitoring"
+    description="Start background heartbeat for continuous KB monitoring",
 )
 @limiter.limit("10/minute")
-async def start_heartbeat(request: Request) -> HeartbeatActionResponse:
+async def start_heartbeat(
+    request: Request, api_key: str = Depends(get_api_key)
+) -> HeartbeatActionResponse:
     """Start heartbeat monitoring.
 
     Returns:
@@ -633,29 +594,22 @@ async def start_heartbeat(request: Request) -> HeartbeatActionResponse:
 
         if _heartbeat_instance and _heartbeat_instance.is_running():
             return HeartbeatActionResponse(
-                success=True,
-                message="Heartbeat already running",
-                running=True
+                success=True, message="Heartbeat already running", running=True
             )
 
         # Create and start heartbeat
-        _heartbeat_instance = KnowledgeBaseHeartbeat(
-            kb=kb,
-            interval=kb.config.heartbeat_interval
-        )
+        _heartbeat_instance = KnowledgeBaseHeartbeat(kb=kb, interval=kb.config.heartbeat_interval)
         _heartbeat_instance.start()
 
         return HeartbeatActionResponse(
-            success=True,
-            message="Heartbeat started successfully",
-            running=True
+            success=True, message="Heartbeat started successfully", running=True
         )
 
     except Exception as e:
         logger.error(f"Heartbeat start error: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to start heartbeat: {str(e)}"
+            detail=f"Failed to start heartbeat: {str(e)}",
         )
 
 
@@ -664,10 +618,12 @@ async def start_heartbeat(request: Request) -> HeartbeatActionResponse:
     response_model=HeartbeatActionResponse,
     tags=["heartbeat"],
     summary="Stop heartbeat",
-    description="Stop background heartbeat monitoring"
+    description="Stop background heartbeat monitoring",
 )
 @limiter.limit("10/minute")
-async def stop_heartbeat(request: Request) -> HeartbeatActionResponse:
+async def stop_heartbeat(
+    request: Request, api_key: str = Depends(get_api_key)
+) -> HeartbeatActionResponse:
     """Stop heartbeat monitoring.
 
     Returns:
@@ -678,25 +634,21 @@ async def stop_heartbeat(request: Request) -> HeartbeatActionResponse:
     try:
         if _heartbeat_instance is None or not _heartbeat_instance.is_running():
             return HeartbeatActionResponse(
-                success=True,
-                message="Heartbeat not running",
-                running=False
+                success=True, message="Heartbeat not running", running=False
             )
 
         _heartbeat_instance.stop()
         _heartbeat_instance = None
 
         return HeartbeatActionResponse(
-            success=True,
-            message="Heartbeat stopped successfully",
-            running=False
+            success=True, message="Heartbeat stopped successfully", running=False
         )
 
     except Exception as e:
         logger.error(f"Heartbeat stop error: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to stop heartbeat: {str(e)}"
+            detail=f"Failed to stop heartbeat: {str(e)}",
         )
 
 
@@ -704,15 +656,18 @@ async def stop_heartbeat(request: Request) -> HeartbeatActionResponse:
 # Collection Endpoints
 # ============================================================================
 
+
 @router.get(
     "/collections",
     response_model=CollectionsResponse,
     tags=["collections"],
     summary="List collections",
-    description="Get list of all knowledge base collections"
+    description="Get list of all knowledge base collections",
 )
 @limiter.limit("60/minute")
-async def list_collections(request: Request) -> CollectionsResponse:
+async def list_collections(
+    request: Request, api_key: str = Depends(get_api_key)
+) -> CollectionsResponse:
     """List all collections.
 
     Returns:
@@ -730,19 +685,16 @@ async def list_collections(request: Request) -> CollectionsResponse:
             name="default",
             document_count=len(kb.documents),
             term_count=len(kb.index),
-            cache_size=len(kb.query_cache)
+            cache_size=len(kb.query_cache),
         )
 
-        return CollectionsResponse(
-            collections=[collection],
-            count=1
-        )
+        return CollectionsResponse(collections=[collection], count=1)
 
     except Exception as e:
         logger.error(f"List collections error: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to list collections: {str(e)}"
+            detail=f"Failed to list collections: {str(e)}",
         )
 
 
@@ -751,12 +703,11 @@ async def list_collections(request: Request) -> CollectionsResponse:
     response_model=CollectionInfo,
     tags=["collections"],
     summary="Get collection info",
-    description="Get detailed information about a specific collection"
+    description="Get detailed information about a specific collection",
 )
 @limiter.limit("60/minute")
 async def get_collection_info(
-    request: Request,
-    name: str
+    request: Request, name: str, api_key: str = Depends(get_api_key)
 ) -> CollectionInfo:
     """Get collection information.
 
@@ -775,15 +726,14 @@ async def get_collection_info(
         # Only "default" collection exists in current implementation
         if name != "default":
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Collection not found: {name}"
+                status_code=status.HTTP_404_NOT_FOUND, detail=f"Collection not found: {name}"
             )
 
         return CollectionInfo(
             name="default",
             document_count=len(kb.documents),
             term_count=len(kb.index),
-            cache_size=len(kb.query_cache)
+            cache_size=len(kb.query_cache),
         )
 
     except HTTPException:
@@ -792,5 +742,5 @@ async def get_collection_info(
         logger.error(f"Get collection error: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get collection info: {str(e)}"
+            detail=f"Failed to get collection info: {str(e)}",
         )
