@@ -3,11 +3,15 @@
 import random
 import threading
 import time
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from knowledgebeast.core.engine import KnowledgeBase
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 
 class KnowledgeBaseHeartbeat:
@@ -57,12 +61,14 @@ class KnowledgeBaseHeartbeat:
     def start(self) -> None:
         """Start background heartbeat thread."""
         if self.running:
+            logger.warning("Heartbeat already running")
             print("⚠️  Heartbeat already running")
             return
 
         self.running = True
-        self.thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
+        self.thread = threading.Thread(target=self._heartbeat_loop, daemon=True, name="KB-Heartbeat")
         self.thread.start()
+        logger.info(f"Knowledge base heartbeat started (interval={self.interval}s)")
         print(f"💓 Knowledge base heartbeat started (every {self.interval}s)")
 
     def stop(self, timeout: float = 5.0) -> None:

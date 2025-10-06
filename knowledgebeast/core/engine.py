@@ -20,9 +20,14 @@ import json
 import pickle
 import time
 import hashlib
+import threading
+import logging
 from typing import Dict, List, Tuple, Optional, Callable
 from knowledgebeast.core.config import KnowledgeBeastConfig
 from knowledgebeast.core.cache import LRUCache
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 
 class KnowledgeBase:
@@ -68,6 +73,9 @@ class KnowledgeBase:
         """
         self.config = config or KnowledgeBeastConfig()
         self.progress_callback = progress_callback if config and config.enable_progress_callbacks else None
+
+        # Thread safety lock (reentrant for nested operations)
+        self._lock = threading.RLock()
 
         # Initialize components
         self.converter = DocumentConverter()
@@ -230,17 +238,15 @@ class KnowledgeBase:
     def _build_index(self) -> None:
         """Build document index from all knowledge directories."""
         if self.config.verbose:
+            logger.info("📚 Ingesting knowledge base...")
             print("📚 Ingesting knowledge base...")
 
-        # Clear existing data
-        self.documents = {}
-        self.index = {}
-
-        # Collect all markdown files
+        # Collect all markdown files (can be done without lock - read-only)
         all_md_files = []
         for kb_dir in self.config.knowledge_dirs:
             if not kb_dir.exists():
                 if self.config.verbose:
+                    logger.warning(f"Skipping non-existent directory: {kb_dir}")
                     print(f"⚠️  Skipping non-existent directory: {kb_dir}")
                 continue
 
@@ -251,7 +257,11 @@ class KnowledgeBase:
         if self.config.verbose:
             print(f"   Found {len(all_md_files)} documents across {len(self.config.knowledge_dirs)} directories")
 
-        # Process each file
+        # Build new index in local variables
+        new_documents = {}
+        new_index = {}
+
+        # Process each file (document conversion can be parallel, indexing is local)
         for i, (kb_dir, md_file) in enumerate(all_md_files, 1):
             self._report_progress(f"Ingesting {md_file.name}", i, len(all_md_files))
 
@@ -260,7 +270,7 @@ class KnowledgeBase:
                 if result.document:
                     # Store document with relative path from its knowledge dir
                     doc_id = str(md_file.relative_to(kb_dir.parent))
-                    self.documents[doc_id] = {
+                    new_documents[doc_id] = {
                         'path': str(md_file),
                         'content': result.document.export_to_markdown(),
                         'name': result.document.name,
@@ -268,24 +278,31 @@ class KnowledgeBase:
                     }
 
                     # Build simple word index
-                    content_lower = self.documents[doc_id]['content'].lower()
+                    content_lower = new_documents[doc_id]['content'].lower()
                     words = content_lower.split()
                     for word in set(words):
-                        if word not in self.index:
-                            self.index[word] = []
-                        self.index[word].append(doc_id)
+                        if word not in new_index:
+                            new_index[word] = []
+                        new_index[word].append(doc_id)
 
                     if self.config.verbose:
+                        logger.info(f"Ingested: {doc_id}")
                         print(f"   ✅ Ingested: {doc_id}")
 
             except Exception as e:
+                logger.error(f"Failed to ingest {md_file}: {e}", exc_info=True)
                 if self.config.verbose:
                     print(f"   ❌ Failed to ingest {md_file}: {e}")
 
-        self.stats['total_documents'] = len(self.documents)
-        self.stats['total_terms'] = len(self.index)
+        # Atomically replace shared state with lock
+        with self._lock:
+            self.documents = new_documents
+            self.index = new_index
+            self.stats['total_documents'] = len(self.documents)
+            self.stats['total_terms'] = len(self.index)
 
         if self.config.verbose:
+            logger.info(f"Ingestion complete! {len(new_documents)} documents, {len(new_index)} terms")
             print(f"\n✅ Ingestion complete!")
             print(f"   - {len(self.documents)} documents indexed")
             print(f"   - {len(self.index)} unique terms\n")
@@ -318,43 +335,50 @@ class KnowledgeBase:
         if not search_terms or not search_terms.strip():
             raise ValueError("Search terms cannot be empty")
 
-        self.stats['queries'] += 1
-        self.last_access = time.time()
+        # Update stats (thread-safe with lock)
+        with self._lock:
+            self.stats['queries'] += 1
+            self.last_access = time.time()
 
         # Generate cache key from query
         cache_key = self._generate_cache_key(search_terms)
 
-        # Check cache with LRU update
+        # Check cache with LRU update (cache is thread-safe)
         if use_cache:
             cached_result = self.query_cache.get(cache_key)
             if cached_result is not None:
-                self.stats['cache_hits'] += 1
+                with self._lock:
+                    self.stats['cache_hits'] += 1
                 return cached_result
 
-        self.stats['cache_misses'] += 1
+        with self._lock:
+            self.stats['cache_misses'] += 1
 
-        # Execute query
+        # Execute query (need lock for reading index and documents)
         try:
             search_terms_list = search_terms.lower().split() if isinstance(search_terms, str) else search_terms
 
-            # Find documents containing search terms
-            matches = {}
-            for term in search_terms_list:
-                if term in self.index:
-                    for doc_id in self.index[term]:
-                        matches[doc_id] = matches.get(doc_id, 0) + 1
+            # Find documents containing search terms (read-only, needs lock)
+            with self._lock:
+                matches = {}
+                for term in search_terms_list:
+                    if term in self.index:
+                        for doc_id in self.index[term]:
+                            matches[doc_id] = matches.get(doc_id, 0) + 1
 
-            # Sort by relevance (number of matching terms)
-            sorted_matches = sorted(matches.items(), key=lambda x: x[1], reverse=True)
-            results = [(doc_id, self.documents[doc_id]) for doc_id, score in sorted_matches]
+                # Sort by relevance (number of matching terms)
+                sorted_matches = sorted(matches.items(), key=lambda x: x[1], reverse=True)
+                # Deep copy document data to avoid returning references
+                results = [(doc_id, dict(self.documents[doc_id])) for doc_id, score in sorted_matches]
 
-            # Cache results with LRU
+            # Cache results with LRU (cache is thread-safe)
             if use_cache:
                 self.query_cache.put(cache_key, results)
 
             return results
 
         except Exception as e:
+            logger.error(f"Query error: {e}", exc_info=True)
             if self.config.verbose:
                 print(f"❌ Query error: {e}")
             raise
@@ -441,6 +465,27 @@ class KnowledgeBase:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Context manager exit."""
-        # Cleanup if needed
-        pass
+        """Context manager exit - cleanup resources."""
+        try:
+            with self._lock:
+                # Clear caches to free memory
+                self.query_cache.clear()
+                logger.info("Cleared query cache on exit")
+
+                # Clear references to allow GC
+                self.documents.clear()
+                self.index.clear()
+                logger.info("Cleared document index on exit")
+
+                # Close converter if it has resources
+                if hasattr(self.converter, 'close') and callable(self.converter.close):
+                    self.converter.close()
+                    logger.info("Closed document converter")
+
+        except Exception as e:
+            logger.error(f"Cleanup error in __exit__: {e}", exc_info=True)
+            if self.config.verbose:
+                print(f"⚠️  Cleanup error: {e}")
+
+        # Don't suppress exceptions from the with block
+        return False
