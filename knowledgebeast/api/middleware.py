@@ -189,9 +189,15 @@ class CacheHeaderMiddleware(BaseHTTPMiddleware):
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Middleware to add security headers.
+    """Middleware to add comprehensive security headers.
 
-    Adds standard security headers to all responses.
+    Adds standard security headers to all responses including:
+    - X-Content-Type-Options: Prevent MIME sniffing
+    - X-Frame-Options: Prevent clickjacking
+    - X-XSS-Protection: Enable browser XSS protection
+    - Content-Security-Policy: Restrict resource loading
+    - Strict-Transport-Security: Force HTTPS (when enabled)
+    - Referrer-Policy: Control referrer information
     """
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
@@ -202,16 +208,123 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             call_next: Next middleware/endpoint to call
 
         Returns:
-            Response with security headers
+            Response with comprehensive security headers
         """
         response = await call_next(request)
 
-        # Add security headers
+        # Prevent MIME type sniffing
         response.headers["X-Content-Type-Options"] = "nosniff"
+
+        # Prevent clickjacking
         response.headers["X-Frame-Options"] = "DENY"
+
+        # Enable browser XSS protection
         response.headers["X-XSS-Protection"] = "1; mode=block"
+
+        # Control referrer information
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
 
-        # Note: HTTPS/TLS headers should be handled by reverse proxy (nginx, etc)
+        # Content Security Policy - restrict resource loading
+        # For API: only allow same-origin and explicitly deny unsafe operations
+        csp_directives = [
+            "default-src 'self'",
+            "script-src 'self'",
+            "style-src 'self' 'unsafe-inline'",  # Allow inline styles for web UI
+            "img-src 'self' data: https:",
+            "font-src 'self' data:",
+            "connect-src 'self'",
+            "frame-ancestors 'none'",
+            "base-uri 'self'",
+            "form-action 'self'",
+            "object-src 'none'",
+            "upgrade-insecure-requests"
+        ]
+        response.headers["Content-Security-Policy"] = "; ".join(csp_directives)
 
+        # Strict Transport Security - force HTTPS (when not in development)
+        # Check if request is secure or if we're behind a proxy
+        is_secure = request.url.scheme == "https" or request.headers.get("X-Forwarded-Proto") == "https"
+        if is_secure:
+            # max-age: 1 year, includeSubDomains, preload
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
+
+        # Permissions Policy - restrict browser features
+        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+
+        return response
+
+
+class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
+    """Middleware to enforce request size limits.
+
+    Prevents DoS attacks by limiting:
+    - Total request body size
+    - Query string length
+    """
+
+    def __init__(self, app: ASGIApp, max_size: int = 10485760, max_query_length: int = 10000):
+        """Initialize request size limit middleware.
+
+        Args:
+            app: ASGI application
+            max_size: Maximum request body size in bytes (default: 10MB)
+            max_query_length: Maximum query string length (default: 10k chars)
+        """
+        super().__init__(app)
+        self.max_size = max_size
+        self.max_query_length = max_query_length
+
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        """Process request and enforce size limits.
+
+        Args:
+            request: Incoming request
+            call_next: Next middleware/endpoint to call
+
+        Returns:
+            Response from next handler or 413 error
+
+        Raises:
+            HTTPException: If request exceeds size limits
+        """
+        # Check query string length
+        if request.url.query and len(request.url.query) > self.max_query_length:
+            logger.warning(
+                f"Request query string too long: {len(request.url.query)} > {self.max_query_length}"
+            )
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "error": "RequestEntityTooLarge",
+                    "message": "Query string too long",
+                    "detail": f"Maximum query length is {self.max_query_length} characters",
+                    "status_code": 413
+                }
+            )
+
+        # Check content-length header if present
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                content_length_int = int(content_length)
+                if content_length_int > self.max_size:
+                    logger.warning(
+                        f"Request body too large: {content_length_int} > {self.max_size}"
+                    )
+                    from fastapi.responses import JSONResponse
+                    return JSONResponse(
+                        status_code=413,
+                        content={
+                            "error": "RequestEntityTooLarge",
+                            "message": "Request body too large",
+                            "detail": f"Maximum request size is {self.max_size} bytes ({self.max_size // 1048576}MB)",
+                            "status_code": 413
+                        }
+                    )
+            except ValueError:
+                pass  # Invalid content-length, let it through and fail later if needed
+
+        # Process request
+        response = await call_next(request)
         return response

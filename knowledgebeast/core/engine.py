@@ -14,25 +14,26 @@ Features:
 - Enhanced error handling and recovery
 """
 
-from pathlib import Path
-import json
-import pickle
-import time
 import hashlib
-import threading
+import json
 import logging
-from typing import Dict, List, Tuple, Optional, Callable
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-from knowledgebeast.core.config import KnowledgeBeastConfig
+import threading
+import time
+from pathlib import Path
+from typing import Callable, Dict, List, Optional, Tuple
+
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+
 from knowledgebeast.core.cache import LRUCache
+from knowledgebeast.core.config import KnowledgeBeastConfig
 from knowledgebeast.core.constants import (
-    MAX_RETRY_ATTEMPTS,
-    RETRY_MIN_WAIT_SECONDS,
-    RETRY_MAX_WAIT_SECONDS,
-    RETRY_MULTIPLIER,
     CACHE_TEMP_SUFFIX,
+    ERR_EMPTY_SEARCH_TERMS,
     JSON_INDENT,
-    ERR_EMPTY_SEARCH_TERMS
+    MAX_RETRY_ATTEMPTS,
+    RETRY_MAX_WAIT_SECONDS,
+    RETRY_MIN_WAIT_SECONDS,
+    RETRY_MULTIPLIER,
 )
 
 # Configure logging
@@ -222,44 +223,28 @@ class KnowledgeBase:
                 if not cache_is_stale:
                     # Cache is valid, use it
                     cached_data = None
-                    migrated = False
 
-                    # Try JSON first (secure format)
+                    # Use only JSON format (secure, no RCE risk)
                     try:
                         with open(cache_path, 'r', encoding='utf-8') as f:
                             cached_data = json.load(f)
                             logger.info("Loaded cache from JSON format")
                     except (json.JSONDecodeError, UnicodeDecodeError):
-                        # Legacy pickle file - migrate it
-                        logger.warning("Detected legacy pickle cache, migrating to JSON")
+                        # Legacy pickle file detected - warn and rebuild
+                        logger.warning(
+                            "Detected legacy pickle cache file. For security, pickle format is no longer supported. "
+                            "Cache will be rebuilt in secure JSON format."
+                        )
                         if self.config.verbose:
-                            print("🔄 Migrating legacy cache to secure JSON format...")
-
-                        try:
-                            with open(cache_path, 'rb') as f:
-                                cached_data = pickle.load(f)
-                            migrated = True
-                        except Exception as pickle_error:
-                            logger.error(f"Failed to load legacy pickle cache: {pickle_error}")
-                            raise
+                            print("⚠️  Legacy pickle cache detected - rebuilding in secure JSON format...")
+                        # Force rebuild by falling through to the rebuild path
+                        cached_data = None
 
                     if cached_data:
                         self.documents = cached_data['documents']
                         self.index = cached_data['index']
-
-                        # If we migrated from pickle, save as JSON
-                        if migrated:
-                            try:
-                                with open(cache_path, 'w', encoding='utf-8') as f:
-                                    json.dump(cached_data, f, indent=2)
-                                logger.info("Successfully migrated cache to JSON format")
-                                if self.config.verbose:
-                                    print("✅ Cache migrated to JSON format\n")
-                            except Exception as save_error:
-                                logger.error(f"Failed to save migrated cache: {save_error}")
-
-                    self.stats['total_documents'] = len(self.documents)
-                    self.stats['total_terms'] = len(self.index)
+                        self.stats['total_documents'] = len(self.documents)
+                        self.stats['total_terms'] = len(self.index)
 
                     logger.info(f"Loaded knowledge base from cache - {len(self.documents)} documents, {len(self.index)} terms")
                     if self.config.verbose:
@@ -311,18 +296,14 @@ class KnowledgeBase:
             # Check if file count changed
             cached_data = None
 
-            # Try JSON first (secure format)
+            # Use only JSON format (secure)
             try:
                 with open(cache_path, 'r', encoding='utf-8') as f:
                     cached_data = json.load(f)
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                # Legacy pickle file
-                try:
-                    with open(cache_path, 'rb') as f:
-                        cached_data = pickle.load(f)
-                except Exception as pickle_error:
-                    logger.error(f"Failed to load cache for staleness check: {pickle_error}")
-                    return True
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                # Not a valid JSON cache (possibly legacy pickle)
+                logger.warning(f"Cache file is not valid JSON (possibly legacy pickle): {e}")
+                return True  # Consider stale, will trigger rebuild
 
             if cached_data and len(cached_data['documents']) != len(all_md_files):
                 logger.debug(f"Cache is stale (file count changed: {len(cached_data['documents'])} → {len(all_md_files)})")
@@ -428,7 +409,7 @@ class KnowledgeBase:
 
         logger.info(f"Ingestion complete! {len(new_documents)} documents, {len(new_index)} terms")
         if self.config.verbose:
-            print(f"\n✅ Ingestion complete!")
+            print("\n✅ Ingestion complete!")
             print(f"   - {len(self.documents)} documents indexed")
             print(f"   - {len(self.index)} unique terms\n")
 
@@ -559,9 +540,10 @@ class KnowledgeBase:
             query: Query string
 
         Returns:
-            MD5 hash of normalized query
+            MD5 hash of normalized query (not for security, just cache key)
         """
-        return hashlib.md5(query.lower().strip().encode()).hexdigest()
+        # MD5 is safe for cache keys (not cryptographic use)
+        return hashlib.md5(query.lower().strip().encode(), usedforsecurity=False).hexdigest()
 
     def get_stats(self) -> Dict:
         """

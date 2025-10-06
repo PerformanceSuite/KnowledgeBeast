@@ -33,6 +33,55 @@ Instead:
 5. **Disclosure**: We'll publicly disclose the issue (after fix is released)
 6. **Credit**: You'll be credited in the security advisory (unless you prefer otherwise)
 
+## Security Hardening
+
+KnowledgeBeast includes comprehensive security hardening:
+
+### Implemented Security Features
+
+#### 1. CORS Protection
+- **Environment-based configuration**: Use `KB_ALLOWED_ORIGINS` to specify exact allowed origins
+- **No wildcard origins**: Default to localhost for development; requires explicit configuration
+- **Restricted methods**: Only GET, POST, DELETE, OPTIONS allowed
+- **Secure by default**: Prevents unauthorized cross-origin access
+
+```bash
+# Configure allowed origins
+KB_ALLOWED_ORIGINS=https://app.example.com,https://api.example.com
+```
+
+#### 2. Security Headers
+- **X-Content-Type-Options**: Prevents MIME sniffing attacks
+- **X-Frame-Options**: Prevents clickjacking (DENY)
+- **X-XSS-Protection**: Browser XSS protection enabled
+- **Content-Security-Policy**: Restricts resource loading to prevent XSS
+- **Strict-Transport-Security**: Forces HTTPS when enabled (1 year, includeSubDomains, preload)
+- **Referrer-Policy**: Controls referrer information leakage
+- **Permissions-Policy**: Restricts browser features (geolocation, microphone, camera)
+
+#### 3. Request Size Limits
+- **Body size limit**: Default 10MB, configurable via `KB_MAX_REQUEST_SIZE`
+- **Query string limit**: Default 10k characters, configurable via `KB_MAX_QUERY_LENGTH`
+- **DoS protection**: Returns 413 for oversized requests
+
+```bash
+# Configure request limits
+KB_MAX_REQUEST_SIZE=10485760  # 10MB
+KB_MAX_QUERY_LENGTH=10000     # 10k chars
+```
+
+#### 4. Secure Caching
+- **JSON-only cache**: Removed pickle deserialization (RCE risk eliminated)
+- **Automatic migration**: Legacy pickle caches automatically rebuilt as JSON
+- **No remote code execution**: All cache operations use safe JSON format
+
+#### 5. Rate Limiting
+- **Configurable limits**: Default 100 requests/minute
+- **Per-IP tracking**: Prevents abuse from single sources
+- **Customizable storage**: Memory or Redis backend
+
+See [Security Configuration Guide](docs/deployment/security.md) for detailed configuration.
+
 ## Security Best Practices
 
 ### For Users
@@ -98,21 +147,22 @@ async def query_endpoint():
     ...
 ```
 
-#### 5. CORS
+#### 5. CORS Configuration (Critical)
 
-Configure CORS appropriately:
+**CORS is now configured via environment variable** - do not modify code:
 
-```python
-from fastapi.middleware.cors import CORSMiddleware
+```bash
+# Development (default if not set)
+# Uses localhost:3000, localhost:8000, etc.
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["https://yourdomain.com"],  # Don't use "*" in production
-    allow_credentials=True,
-    allow_methods=["GET", "POST"],
-    allow_headers=["*"],
-)
+# Production (REQUIRED)
+KB_ALLOWED_ORIGINS=https://yourdomain.com,https://api.yourdomain.com
+
+# ❌ NEVER use wildcard in production
+# KB_ALLOWED_ORIGINS=*  # INSECURE - DO NOT USE
 ```
+
+The application automatically restricts CORS to configured origins and only allows necessary methods (GET, POST, DELETE).
 
 #### 6. Secrets Management
 
@@ -176,6 +226,53 @@ pip-audit
 - Use `.gitignore` for sensitive files
 - Use environment variables or secret managers
 
+## Security Hardening Checklist
+
+Use this checklist to ensure your deployment is secure:
+
+### Critical (Must Do)
+
+- [ ] **Configure CORS origins** - Set `KB_ALLOWED_ORIGINS` to your specific domains
+- [ ] **Enable HTTPS** - Use TLS/SSL certificates (via reverse proxy or direct)
+- [ ] **Set request limits** - Configure `KB_MAX_REQUEST_SIZE` and `KB_MAX_QUERY_LENGTH`
+- [ ] **Review security headers** - All security headers are enabled by default
+- [ ] **Verify cache format** - Ensure using JSON cache (not pickle)
+
+### Recommended
+
+- [ ] **Add authentication** - Implement API key or OAuth2
+- [ ] **Enable rate limiting** - Configure `KB_RATE_LIMIT_PER_MINUTE`
+- [ ] **Set up monitoring** - Track 413, CORS, and rate limit errors
+- [ ] **Run security scans** - Use `bandit -r knowledgebeast/`
+- [ ] **Review dependencies** - Run `pip-audit` regularly
+- [ ] **Implement logging** - Monitor security events
+- [ ] **Backup data** - Regular backups of knowledge base
+
+### Production Checklist
+
+```bash
+# 1. Set allowed origins (CRITICAL)
+export KB_ALLOWED_ORIGINS=https://yourdomain.com
+
+# 2. Configure request limits
+export KB_MAX_REQUEST_SIZE=5242880  # 5MB for API
+export KB_MAX_QUERY_LENGTH=5000
+
+# 3. Enable rate limiting
+export KB_RATE_LIMIT_PER_MINUTE=60
+
+# 4. Run security scan
+bandit -r knowledgebeast/
+
+# 5. Run security tests
+pytest tests/security/ -v
+
+# 6. Verify no pickle usage
+grep -r "pickle" knowledgebeast/core/engine.py  # Should only show comments
+```
+
+See [Security Configuration Guide](docs/deployment/security.md) for complete documentation.
+
 ## Known Security Considerations
 
 ### 1. Local File Access
@@ -192,7 +289,7 @@ Production deployments should add:
 - JWT tokens
 - OAuth2
 
-See [Production Checklist](docs/deployment/production-checklist.md).
+See [Security Configuration Guide](docs/deployment/security.md).
 
 ### 3. Embeddings Model
 
@@ -207,6 +304,16 @@ ChromaDB stores data locally:
 - Ensure proper file permissions
 - Consider encryption at rest
 - Backup regularly
+
+## Recent Security Improvements (v0.1.x)
+
+### October 2025 - Comprehensive Security Hardening
+
+- ✅ **CORS hardening**: Environment-based configuration, no wildcard
+- ✅ **Pickle removal**: Eliminated RCE risk, JSON-only cache
+- ✅ **Security headers**: CSP, HSTS, X-Frame-Options, etc.
+- ✅ **Request limits**: DoS protection via size limits
+- ✅ **15+ security tests**: Comprehensive test coverage
 
 ## Security Updates
 
