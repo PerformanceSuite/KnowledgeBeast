@@ -16,6 +16,8 @@ from knowledgebeast.core.indexer import DocumentIndexer
 
 logger = logging.getLogger(__name__)
 
+__all__ = ['KnowledgeBaseBuilder']
+
 
 class KnowledgeBaseBuilder:
     """Builder for constructing KnowledgeBase instances.

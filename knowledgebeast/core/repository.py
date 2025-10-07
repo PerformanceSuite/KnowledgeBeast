@@ -22,6 +22,8 @@ from knowledgebeast.core.constants import (
 
 logger = logging.getLogger(__name__)
 
+__all__ = ['DocumentRepository']
+
 
 class DocumentRepository:
     """Repository for document storage and index management.

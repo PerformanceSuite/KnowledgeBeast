@@ -12,6 +12,8 @@ from knowledgebeast.core.constants import ERR_EMPTY_SEARCH_TERMS
 
 logger = logging.getLogger(__name__)
 
+__all__ = ['QueryEngine']
+
 
 class QueryEngine:
     """Engine for executing queries against the document index.
@@ -75,7 +77,13 @@ class QueryEngine:
         documents = self.repository.get_documents_by_ids(doc_ids)
 
         # Combine doc_ids with documents
-        results = list(zip(doc_ids, documents))
+        # Ensure we got documents for all IDs (safety check)
+        if len(documents) != len(doc_ids):
+            logger.warning(f"Document ID mismatch: expected {len(doc_ids)}, got {len(documents)}")
+            # Filter to only doc_ids that have corresponding documents
+            results = [(doc_id, doc) for doc_id, doc in zip(doc_ids, documents) if doc]
+        else:
+            results = list(zip(doc_ids, documents))
 
         logger.debug(f"Query '{search_terms[:50]}' returned {len(results)} results")
         return results

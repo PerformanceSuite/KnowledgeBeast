@@ -30,6 +30,7 @@ All public APIs remain unchanged. Existing code will work without modification.
 import time
 import logging
 import threading
+import types
 from typing import Dict, List, Tuple, Optional, Callable
 
 from knowledgebeast.core.config import KnowledgeBeastConfig
@@ -40,6 +41,8 @@ from knowledgebeast.core.indexer import DocumentIndexer
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+__all__ = ['KnowledgeBase']
 
 
 class KnowledgeBase:
@@ -377,16 +380,27 @@ class KnowledgeBase:
     # ============================================================================
     # These properties maintain backward compatibility with code that directly
     # accesses internal attributes. New code should use methods instead.
+    #
+    # Note: We return read-only MappingProxyType views to prevent external
+    # modification of internal state while maintaining backward compatibility.
 
     @property
-    def documents(self) -> Dict:
-        """Access to documents (backward compatibility)."""
-        return self._repository.documents
+    def documents(self) -> types.MappingProxyType:
+        """Access to documents (backward compatibility, read-only view).
+
+        Returns:
+            Read-only mapping proxy of documents dictionary
+        """
+        return types.MappingProxyType(self._repository.documents)
 
     @property
-    def index(self) -> Dict:
-        """Access to index (backward compatibility)."""
-        return self._repository.index
+    def index(self) -> types.MappingProxyType:
+        """Access to index (backward compatibility, read-only view).
+
+        Returns:
+            Read-only mapping proxy of index dictionary
+        """
+        return types.MappingProxyType(self._repository.index)
 
     @property
     def query_cache(self):

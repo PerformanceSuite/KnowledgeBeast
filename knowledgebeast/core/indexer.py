@@ -13,6 +13,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 
 from knowledgebeast.core.repository import DocumentRepository
 from knowledgebeast.core.config import KnowledgeBeastConfig
+from knowledgebeast.core.converters import get_document_converter
 from knowledgebeast.core.constants import (
     MAX_RETRY_ATTEMPTS,
     RETRY_MIN_WAIT_SECONDS,
@@ -22,37 +23,7 @@ from knowledgebeast.core.constants import (
 
 logger = logging.getLogger(__name__)
 
-# Graceful dependency degradation for docling
-try:
-    from docling.document_converter import DocumentConverter
-    DOCLING_AVAILABLE = True
-    logger.info("Docling document converter loaded successfully")
-except ImportError:
-    DOCLING_AVAILABLE = False
-    logger.warning("Docling not available, using fallback converter")
-
-    class FallbackConverter:
-        """Fallback converter for when docling is not available."""
-
-        def convert(self, path: Path):
-            """Simple markdown reader fallback."""
-            from types import SimpleNamespace
-
-            try:
-                with open(path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-
-                return SimpleNamespace(
-                    document=SimpleNamespace(
-                        name=path.name,
-                        export_to_markdown=lambda: content
-                    )
-                )
-            except Exception as e:
-                logger.error(f"Fallback converter failed for {path}: {e}")
-                raise
-
-    DocumentConverter = FallbackConverter
+__all__ = ['DocumentIndexer']
 
 
 class DocumentIndexer:
@@ -92,7 +63,7 @@ class DocumentIndexer:
         """
         self.config = config
         self.repository = repository
-        self.converter = DocumentConverter()
+        self.converter = get_document_converter()
         self.progress_callback = progress_callback if config.enable_progress_callbacks else None
 
     def ingest_all(self) -> None:

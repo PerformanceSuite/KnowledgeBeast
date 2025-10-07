@@ -12,6 +12,8 @@ from knowledgebeast.core.cache import LRUCache
 
 logger = logging.getLogger(__name__)
 
+__all__ = ['CacheManager']
+
 T = TypeVar('T')
 
 
