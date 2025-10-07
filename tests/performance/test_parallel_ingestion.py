@@ -440,7 +440,7 @@ class TestRegressionBaseline:
             "machine learning",
             "Topic A1",
             "Section 1",
-            "doc050"
+            "document 50"
         ]
 
         for query in queries:
