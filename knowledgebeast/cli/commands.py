@@ -552,5 +552,106 @@ def serve(ctx: click.Context, host: str, port: int, reload: bool) -> None:
         raise click.Abort()
 
 
+@cli.command()
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(path_type=Path),
+    help="Output file path (.json, .html, or .txt)"
+)
+@click.option(
+    "--format",
+    "-f",
+    type=click.Choice(['json', 'html', 'text']),
+    default='text',
+    help="Output format (default: text)"
+)
+@click.option(
+    "--data-dir",
+    type=click.Path(path_type=Path),
+    default="./data",
+    help="Directory for data storage"
+)
+@click.pass_context
+def benchmark(ctx: click.Context, output: Optional[Path], format: str, data_dir: Path) -> None:
+    """Run comprehensive performance benchmarks."""
+    try:
+        from tests.performance.dashboard import PerformanceDashboard
+    except ImportError:
+        console.print("[red]❌ Error: Performance dashboard module not found[/red]")
+        console.print("[dim]Make sure you're running from the project root directory[/dim]")
+        raise click.Abort()
+
+    try:
+        config = KnowledgeBeastConfig(data_dir=data_dir)
+
+        with console.status("[bold cyan]Running performance benchmarks...", spinner="dots"):
+            with KnowledgeBase(config) as kb:
+                # Check if KB has data
+                stats = kb.get_stats()
+                if stats['total_documents'] == 0:
+                    console.print("[yellow]⚠ Warning: Knowledge base is empty. Benchmarks may not be representative.[/yellow]")
+
+                dashboard = PerformanceDashboard(kb)
+                report = dashboard.run_full_benchmark()
+
+        console.print()
+        console.print("[green]✓[/green] Benchmark complete!")
+        console.print()
+
+        # Generate output
+        if format == 'json' or (output and str(output).endswith('.json')):
+            output_text = report.to_json()
+        elif format == 'html' or (output and str(output).endswith('.html')):
+            output_text = dashboard.generate_html_report(report)
+        else:
+            output_text = dashboard.generate_ascii_report(report)
+
+        # Save or display
+        if output:
+            output.write_text(output_text)
+            console.print(f"[green]✓[/green] Report saved to: {output}")
+
+            # Open HTML in browser if requested
+            if str(output).endswith('.html'):
+                console.print("[dim]You can open the HTML report in your browser[/dim]")
+        else:
+            console.print(output_text)
+
+        # Display summary panel
+        panel = Panel(
+            f"""[bold]Benchmark Summary[/bold]
+
+[cyan]Query Latency (P99):[/cyan]
+  Uncached: {report.query_latency['p99_ms']:.2f}ms
+  Cached: {report.cached_query_latency['p99_ms']:.2f}ms
+
+[cyan]Throughput:[/cyan]
+  Sequential: {report.throughput_sequential['queries_per_second']:.2f} queries/sec
+  Concurrent (10 workers): {report.throughput_concurrent[0]['queries_per_second']:.2f} queries/sec
+
+[cyan]Cache Performance:[/cyan]
+  Hit Ratio: {report.cache_performance['hit_ratio']*100:.1f}%
+  Hit Latency: {report.cache_performance['avg_hit_latency_us']:.2f}μs
+
+[cyan]Memory:[/cyan]
+  RSS: {report.memory_usage['rss_mb']:.2f}MB
+""",
+            title="Performance Metrics",
+            border_style="cyan",
+            box=box.ROUNDED,
+        )
+        console.print(panel)
+
+    except KeyboardInterrupt:
+        console.print("\n[yellow]⚠️  Benchmark cancelled by user[/yellow]")
+        logger.warning("Benchmark operation cancelled by KeyboardInterrupt")
+        raise click.Abort()
+    except Exception as e:
+        console.print(f"[red]❌ Error: {e}[/red]")
+        logger.error(f"Benchmark command failed: {e}", exc_info=True)
+        raise click.Abort()
+
+
 if __name__ == "__main__":
     cli()
