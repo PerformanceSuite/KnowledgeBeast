@@ -20,6 +20,7 @@ import time
 import hashlib
 import threading
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Tuple, Optional, Callable
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from knowledgebeast.core.config import KnowledgeBeastConfig
@@ -350,8 +351,50 @@ class KnowledgeBase:
         """
         return self.converter.convert(path)
 
+    def _process_single_document(self, kb_dir: Path, md_file: Path) -> Optional[Tuple[str, Dict, Dict[str, List[str]]]]:
+        """Process a single document and return its data and index.
+
+        Args:
+            kb_dir: Knowledge base directory
+            md_file: Path to markdown file
+
+        Returns:
+            Tuple of (doc_id, document_data, word_index) or None if failed
+        """
+        try:
+            result = self._convert_document_with_retry(md_file)
+            if result.document:
+                # Store document with relative path from its knowledge dir
+                doc_id = str(md_file.relative_to(kb_dir.parent))
+                document_data = {
+                    'path': str(md_file),
+                    'content': result.document.export_to_markdown(),
+                    'name': result.document.name,
+                    'kb_dir': str(kb_dir)
+                }
+
+                # Build word index for this document
+                content_lower = document_data['content'].lower()
+                words = content_lower.split()
+                word_index = {}
+                for word in set(words):
+                    word_index[word] = [doc_id]
+
+                logger.debug(f"Ingested: {doc_id}")
+                if self.config.verbose:
+                    print(f"   ✅ Ingested: {doc_id}")
+
+                return (doc_id, document_data, word_index)
+
+        except Exception as e:
+            logger.error(f"Failed to ingest {md_file}: {e}", exc_info=True)
+            if self.config.verbose:
+                print(f"   ❌ Failed to ingest {md_file}: {e}")
+
+        return None
+
     def _build_index(self) -> None:
-        """Build document index from all knowledge directories."""
+        """Build document index from all knowledge directories using parallel processing."""
         logger.info("Ingesting knowledge base...")
         if self.config.verbose:
             print("📚 Ingesting knowledge base...")
@@ -369,46 +412,56 @@ class KnowledgeBase:
             md_files = [f for f in md_files if not f.is_symlink()]
             all_md_files.extend([(kb_dir, f) for f in md_files])
 
-        logger.info(f"Found {len(all_md_files)} documents across {len(self.config.knowledge_dirs)} directories")
+        total_files = len(all_md_files)
+        logger.info(f"Found {total_files} documents across {len(self.config.knowledge_dirs)} directories")
         if self.config.verbose:
-            print(f"   Found {len(all_md_files)} documents across {len(self.config.knowledge_dirs)} directories")
+            print(f"   Found {total_files} documents across {len(self.config.knowledge_dirs)} directories")
+            print(f"   Using {self.config.max_workers} parallel workers")
 
         # Build new index in local variables
         new_documents = {}
         new_index = {}
 
-        # Process each file (document conversion can be parallel, indexing is local)
-        for i, (kb_dir, md_file) in enumerate(all_md_files, 1):
-            self._report_progress(f"Ingesting {md_file.name}", i, len(all_md_files))
+        # Process documents in parallel using ThreadPoolExecutor
+        # This is safe because:
+        # 1. Document conversion is I/O bound (reading files)
+        # 2. Each worker processes independently
+        # 3. Results are merged after all workers complete
+        # 4. Final index swap is atomic with lock
 
-            try:
-                result = self._convert_document_with_retry(md_file)
-                if result.document:
-                    # Store document with relative path from its knowledge dir
-                    doc_id = str(md_file.relative_to(kb_dir.parent))
-                    new_documents[doc_id] = {
-                        'path': str(md_file),
-                        'content': result.document.export_to_markdown(),
-                        'name': result.document.name,
-                        'kb_dir': str(kb_dir)
-                    }
+        processed_count = 0
+        with ThreadPoolExecutor(max_workers=self.config.max_workers) as executor:
+            # Submit all tasks
+            future_to_file = {
+                executor.submit(self._process_single_document, kb_dir, md_file): (kb_dir, md_file)
+                for kb_dir, md_file in all_md_files
+            }
 
-                    # Build simple word index
-                    content_lower = new_documents[doc_id]['content'].lower()
-                    words = content_lower.split()
-                    for word in set(words):
-                        if word not in new_index:
-                            new_index[word] = []
-                        new_index[word].append(doc_id)
+            # Process completed tasks as they finish
+            for future in as_completed(future_to_file):
+                kb_dir, md_file = future_to_file[future]
+                processed_count += 1
 
-                    logger.debug(f"Ingested: {doc_id}")
+                self._report_progress(f"Ingesting {md_file.name}", processed_count, total_files)
+
+                try:
+                    result = future.result()
+                    if result:
+                        doc_id, document_data, word_index = result
+
+                        # Add document to collection
+                        new_documents[doc_id] = document_data
+
+                        # Merge word index
+                        for word, doc_ids in word_index.items():
+                            if word not in new_index:
+                                new_index[word] = []
+                            new_index[word].extend(doc_ids)
+
+                except Exception as e:
+                    logger.error(f"Error processing future for {md_file}: {e}", exc_info=True)
                     if self.config.verbose:
-                        print(f"   ✅ Ingested: {doc_id}")
-
-            except Exception as e:
-                logger.error(f"Failed to ingest {md_file}: {e}", exc_info=True)
-                if self.config.verbose:
-                    print(f"   ❌ Failed to ingest {md_file}: {e}")
+                        print(f"   ❌ Error processing {md_file}: {e}")
 
         # Atomically replace shared state with lock
         with self._lock:

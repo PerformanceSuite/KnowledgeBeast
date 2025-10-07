@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, ConfigDict, field_validator, ValidationEr
 # ============================================================================
 
 class QueryRequest(BaseModel):
-    """Request model for querying the knowledge base."""
+    """Request model for querying the knowledge base (legacy, without pagination metadata)."""
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -51,28 +51,47 @@ class QueryRequest(BaseModel):
         description="Number of results to skip for pagination"
     )
 
+
+class PaginatedQueryRequest(BaseModel):
+    """Request model for querying the knowledge base with pagination support."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "query": "How do I use librosa for audio analysis?",
+                "use_cache": True,
+                "page": 1,
+                "page_size": 10
+            }
+        }
+    )
+
+    query: str = Field(
+        ...,
+        description="Search query string",
+        min_length=1,
+        max_length=1000,
+        examples=["audio processing best practices"]
+    )
+    use_cache: bool = Field(
+        default=True,
+        description="Whether to use cached results if available"
+    )
+    page: int = Field(
+        default=1,
+        ge=1,
+        description="Page number (1-indexed)"
+    )
+    page_size: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Number of results per page (1-100)"
+    )
+
     @field_validator('query')
     @classmethod
-    def sanitize_query(cls, v: str) -> str:
-        """Sanitize query string to prevent injection attacks."""
-        # Remove potentially dangerous characters
-        dangerous_chars = ['<', '>', ';', '&', '|', '$', '`', '\n', '\r']
-        for char in dangerous_chars:
-            if char in v:
-                raise ValueError(f"Query contains invalid character: {char}")
-
-        # Strip whitespace
-        v = v.strip()
-
-        # Ensure not empty after stripping
-        if not v:
-            raise ValueError("Query cannot be empty or only whitespace")
-
-        return v
-
-    @field_validator('query')
-    @classmethod
-    def sanitize_query(cls, v: str) -> str:
+    def sanitize_paginated_query(cls, v: str) -> str:
         """Sanitize query string to prevent injection attacks."""
         # Remove potentially dangerous characters
         dangerous_chars = ['<', '>', ';', '&', '|', '$', '`', '\n', '\r']
@@ -236,7 +255,7 @@ class QueryResult(BaseModel):
 
 
 class QueryResponse(BaseModel):
-    """Response model for query endpoint."""
+    """Response model for query endpoint (legacy, without pagination metadata)."""
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -261,6 +280,67 @@ class QueryResponse(BaseModel):
     count: int = Field(..., description="Number of results returned")
     cached: bool = Field(..., description="Whether results were served from cache")
     query: str = Field(..., description="Original query string")
+
+
+class PaginationMetadata(BaseModel):
+    """Pagination metadata for query results."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "total_results": 42,
+                "total_pages": 5,
+                "current_page": 1,
+                "page_size": 10,
+                "has_next": True,
+                "has_previous": False
+            }
+        }
+    )
+
+    total_results: int = Field(..., description="Total number of results across all pages")
+    total_pages: int = Field(..., description="Total number of pages")
+    current_page: int = Field(..., description="Current page number (1-indexed)")
+    page_size: int = Field(..., description="Number of results per page")
+    has_next: bool = Field(..., description="Whether there is a next page")
+    has_previous: bool = Field(..., description="Whether there is a previous page")
+
+
+class PaginatedQueryResponse(BaseModel):
+    """Response model for paginated query endpoint."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "results": [
+                    {
+                        "doc_id": "knowledge-base/audio/librosa.md",
+                        "content": "Librosa guide...",
+                        "name": "Librosa Guide",
+                        "path": "/path/to/librosa.md",
+                        "kb_dir": "/knowledge-base"
+                    }
+                ],
+                "count": 10,
+                "cached": True,
+                "query": "librosa audio analysis",
+                "pagination": {
+                    "total_results": 42,
+                    "total_pages": 5,
+                    "current_page": 1,
+                    "page_size": 10,
+                    "has_next": True,
+                    "has_previous": False
+                }
+            }
+        }
+    )
+
+    results: List[QueryResult] = Field(..., description="List of matching documents for current page")
+    count: int = Field(..., description="Number of results in current page")
+    cached: bool = Field(..., description="Whether results were served from cache")
+    query: str = Field(..., description="Original query string")
+    pagination: PaginationMetadata = Field(..., description="Pagination metadata")
 
 
 class IngestResponse(BaseModel):

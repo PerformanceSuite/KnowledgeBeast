@@ -1,6 +1,7 @@
 """Configuration management for KnowledgeBeast."""
 
 import os
+import multiprocessing
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Dict, Any
@@ -17,6 +18,7 @@ class KnowledgeBeastConfig:
     - KB_MAX_CACHE_SIZE: Maximum number of cached queries
     - KB_HEARTBEAT_INTERVAL: Heartbeat interval in seconds
     - KB_AUTO_WARM: Auto-warm on initialization (true/false)
+    - KB_MAX_WORKERS: Number of parallel workers for document ingestion
 
     Attributes:
         knowledge_dirs: List of knowledge base directories to ingest
@@ -27,6 +29,7 @@ class KnowledgeBeastConfig:
         warming_queries: List of queries to execute during warming
         enable_progress_callbacks: Enable progress callbacks for long operations
         verbose: Enable verbose logging
+        max_workers: Maximum number of parallel workers for document ingestion (default: CPU count)
     """
 
     # Knowledge base directories (supports multiple)
@@ -54,6 +57,7 @@ class KnowledgeBeastConfig:
     # Performance settings
     enable_progress_callbacks: bool = True
     verbose: bool = True
+    max_workers: Optional[int] = None  # None = auto-detect CPU count
 
     def __post_init__(self) -> None:
         """Validate and load from environment variables."""
@@ -73,6 +77,13 @@ class KnowledgeBeastConfig:
         if env_auto_warm := os.getenv('KB_AUTO_WARM'):
             self.auto_warm = env_auto_warm.lower() in ('true', '1', 'yes')
 
+        if env_max_workers := os.getenv('KB_MAX_WORKERS'):
+            self.max_workers = int(env_max_workers)
+
+        # Auto-detect CPU count if not set
+        if self.max_workers is None:
+            self.max_workers = multiprocessing.cpu_count()
+
         # Validate
         if not self.knowledge_dirs:
             raise ValueError("At least one knowledge directory must be specified")
@@ -82,6 +93,9 @@ class KnowledgeBeastConfig:
 
         if self.heartbeat_interval < 10:
             raise ValueError("heartbeat_interval must be at least 10 seconds")
+
+        if self.max_workers <= 0:
+            raise ValueError("max_workers must be positive")
 
     def get_all_knowledge_paths(self) -> List[Path]:
         """Get all knowledge directory paths.
@@ -98,7 +112,8 @@ class KnowledgeBeastConfig:
 
         logger.info(f"KnowledgeBeast Configuration: dirs={len(self.knowledge_dirs)}, "
                    f"cache={self.cache_file}, max_cache={self.max_cache_size}, "
-                   f"heartbeat={self.heartbeat_interval}s, auto_warm={self.auto_warm}")
+                   f"heartbeat={self.heartbeat_interval}s, auto_warm={self.auto_warm}, "
+                   f"max_workers={self.max_workers}")
 
         if not self.verbose:
             return
@@ -112,6 +127,7 @@ class KnowledgeBeastConfig:
         print(f"   Warming Queries: {len(self.warming_queries)} queries")
         print(f"   Progress Callbacks: {self.enable_progress_callbacks}")
         print(f"   Verbose: {self.verbose}")
+        print(f"   Max Workers: {self.max_workers}")
         print()
 
 
