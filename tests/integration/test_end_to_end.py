@@ -234,10 +234,11 @@ class TestErrorRecovery:
 
         assert len(kb2.documents) > 0
 
-    def test_recovery_from_missing_knowledge_dir(self):
+    def test_recovery_from_missing_knowledge_dir(self, tmp_path):
         """Test KB handles missing knowledge directory."""
         config = KnowledgeBeastConfig(
             knowledge_dirs=[Path("/nonexistent/path")],
+            cache_file=tmp_path / "isolated_cache.pkl",  # Unique cache file
             auto_warm=False,
             verbose=False
         )
@@ -248,10 +249,11 @@ class TestErrorRecovery:
         # Should complete without error (just no documents)
         assert len(kb.documents) == 0
 
-    def test_query_on_empty_kb(self):
+    def test_query_on_empty_kb(self, tmp_path):
         """Test querying empty KB doesn't crash."""
         config = KnowledgeBeastConfig(
             knowledge_dirs=[Path("/nonexistent")],
+            cache_file=tmp_path / "empty_cache.pkl",  # Unique cache file
             auto_warm=False,
             verbose=False
         )

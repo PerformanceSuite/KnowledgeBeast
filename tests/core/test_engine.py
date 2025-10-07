@@ -86,6 +86,7 @@ class TestDocumentIngestion:
         """Test ingestion handles nonexistent directories gracefully."""
         config = KnowledgeBeastConfig(
             knowledge_dirs=[temp_kb_dir / "nonexistent"],
+            cache_file=temp_kb_dir / "test_cache.pkl",  # Unique cache file
             auto_warm=False,
             verbose=False
         )
