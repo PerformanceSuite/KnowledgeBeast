@@ -40,6 +40,9 @@ from knowledgebeast.api.models import (
     HeartbeatStatusResponse,
     IngestRequest,
     IngestResponse,
+    PaginatedQueryRequest,
+    PaginatedQueryResponse,
+    PaginationMetadata,
     QueryRequest,
     QueryResponse,
     QueryResult,
@@ -324,6 +327,105 @@ async def query_knowledge_base(
         logger.error(f"Query error: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Query failed: {str(e)}"
+        )
+
+
+@router.post(
+    "/query/paginated",
+    response_model=PaginatedQueryResponse,
+    tags=["query"],
+    summary="Query knowledge base with pagination",
+    description="Search the knowledge base for relevant documents with pagination support",
+)
+@limiter.limit("30/minute")
+async def query_knowledge_base_paginated(
+    request: Request, query_request: PaginatedQueryRequest, api_key: str = Depends(get_api_key)
+) -> PaginatedQueryResponse:
+    """Query the knowledge base for relevant documents with pagination.
+
+    Args:
+        query_request: Paginated query request with search terms and pagination options
+
+    Returns:
+        Paginated list of matching documents with metadata
+
+    Raises:
+        HTTPException: If query fails or invalid page requested
+    """
+    try:
+        kb = get_kb_instance()
+
+        # Check if cached before query
+        cache_key = kb._generate_cache_key(query_request.query)
+        was_cached = cache_key in kb.query_cache._cache
+
+        # Execute query in thread pool (non-blocking) - get ALL results
+        loop = asyncio.get_event_loop()
+        all_results = await loop.run_in_executor(
+            _executor,
+            kb.query,
+            query_request.query,
+            query_request.use_cache
+        )
+
+        # Calculate pagination metadata
+        total_results = len(all_results)
+        page_size = query_request.page_size
+        current_page = query_request.page
+        total_pages = (total_results + page_size - 1) // page_size if total_results > 0 else 1
+
+        # Validate page number
+        if current_page > total_pages and total_results > 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Page {current_page} exceeds total pages {total_pages}"
+            )
+
+        # Calculate slice indices for current page
+        start_idx = (current_page - 1) * page_size
+        end_idx = start_idx + page_size
+
+        # Slice results for current page
+        page_results = all_results[start_idx:end_idx]
+
+        # Convert results to QueryResult models
+        query_results = [
+            QueryResult(
+                doc_id=doc_id,
+                content=doc["content"],
+                name=doc["name"],
+                path=doc["path"],
+                kb_dir=doc["kb_dir"],
+            )
+            for doc_id, doc in page_results
+        ]
+
+        # Build pagination metadata
+        pagination = PaginationMetadata(
+            total_results=total_results,
+            total_pages=total_pages,
+            current_page=current_page,
+            page_size=page_size,
+            has_next=current_page < total_pages,
+            has_previous=current_page > 1
+        )
+
+        return PaginatedQueryResponse(
+            results=query_results,
+            count=len(query_results),
+            cached=was_cached,
+            query=query_request.query,
+            pagination=pagination
+        )
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        logger.error(f"Paginated query error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Paginated query failed: {str(e)}"
         )
 
 
