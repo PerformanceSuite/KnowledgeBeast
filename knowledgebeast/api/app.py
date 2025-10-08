@@ -375,6 +375,31 @@ async def root() -> dict:
     }
 
 
+@app.get("/health", tags=["health"])
+async def health() -> dict:
+    """Health check endpoint.
+
+    Returns:
+        Health status and system information
+    """
+    try:
+        kb = get_kb_instance()
+        kb_status = "initialized" if kb else "not_initialized"
+        stats = kb.get_stats() if kb else {}
+    except Exception as e:
+        logger.error(f"Error getting KB status: {e}")
+        kb_status = "error"
+        stats = {}
+
+    return {
+        "status": "healthy",
+        "version": __version__,
+        "kb_status": kb_status,
+        "kb_stats": stats,
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
 

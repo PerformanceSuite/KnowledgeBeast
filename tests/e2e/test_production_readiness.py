@@ -154,25 +154,35 @@ class E2ETestSuite:
                 stderr=subprocess.PIPE
             )
 
-            # Wait for server to start
-            print_info("Waiting for server to be ready...")
-            max_retries = 30
+            # Wait for server to start (longer timeout for model loading)
+            print_info("Waiting for server to be ready (may take 60s for model loading)...")
+            max_retries = 60
             for i in range(max_retries):
                 try:
                     response = requests.get(
                         f"{API_BASE_URL}/health",
                         headers={'X-API-Key': API_KEY},
-                        timeout=1
+                        timeout=2
                     )
                     if response.status_code == 200:
                         print_pass(f"API server started successfully (took {i+1}s)")
                         self.results['passed'] += 1
                         self.results['total'] += 1
                         return True
-                except requests.exceptions.RequestException:
+                except requests.exceptions.RequestException as e:
+                    if i % 10 == 0:  # Print progress every 10 seconds
+                        print_info(f"Still waiting... ({i+1}s elapsed)")
                     time.sleep(1)
 
-            print_fail("API server failed to start within 30 seconds")
+            # Check if process died
+            if self.api_server_process and self.api_server_process.poll() is not None:
+                stdout, stderr = self.api_server_process.communicate()
+                print_fail(f"API server process died during startup")
+                if stderr:
+                    print(f"     STDERR: {stderr.decode()[:500]}")
+            else:
+                print_fail("API server failed to start within 60 seconds")
+
             self.results['failed'] += 1
             self.results['total'] += 1
             return False
@@ -267,16 +277,21 @@ class E2ETestSuite:
                 self.results['total'] += 1
                 return False
 
-            # Ingest document
+            # Read document content
+            with open(readme_path, 'r') as f:
+                content = f.read()
+
+            # Ingest document (send JSON, not multipart)
             print_info(f"Ingesting {readme_path}...")
-            with open(readme_path, 'rb') as f:
-                response = requests.post(
-                    f"{API_BASE_URL}/api/v2/projects/{self.test_project_id}/ingest",
-                    headers={'X-API-Key': API_KEY},
-                    files={'file': ('README.md', f, 'text/markdown')},
-                    data={'metadata': json.dumps({'source': 'e2e-test'})},
-                    timeout=30
-                )
+            response = requests.post(
+                f"{API_BASE_URL}/api/v2/projects/{self.test_project_id}/ingest",
+                headers={'X-API-Key': API_KEY},
+                json={
+                    'content': content,
+                    'metadata': {'source': 'e2e-test', 'filename': 'README.md'}
+                },
+                timeout=30
+            )
 
             if response.status_code in [200, 201]:
                 data = response.json()
