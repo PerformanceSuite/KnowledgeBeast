@@ -51,6 +51,25 @@ class QueryRequest(BaseModel):
         description="Number of results to skip for pagination"
     )
 
+    @field_validator('query')
+    @classmethod
+    def sanitize_query(cls, v: str) -> str:
+        """Sanitize query string to prevent injection attacks."""
+        # Remove potentially dangerous characters
+        dangerous_chars = ['<', '>', ';', '&', '|', '$', '`', '\n', '\r']
+        for char in dangerous_chars:
+            if char in v:
+                raise ValueError(f"Query contains invalid character: {char}")
+
+        # Strip whitespace
+        v = v.strip()
+
+        # Ensure not empty after stripping
+        if not v:
+            raise ValueError("Query cannot be empty or only whitespace")
+
+        return v
+
 
 class PaginatedQueryRequest(BaseModel):
     """Request model for querying the knowledge base with pagination support."""
