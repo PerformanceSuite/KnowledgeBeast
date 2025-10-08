@@ -1,6 +1,7 @@
 """Pytest fixtures for KnowledgeBeast tests."""
 
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Generator
 import pytest
@@ -211,3 +212,13 @@ def mock_progress_callback():
 
     callback.calls = calls
     return callback
+
+
+@pytest.fixture
+def unique_collection():
+    """Generate unique collection name for each test.
+
+    Returns:
+        Unique collection name string
+    """
+    return f"test_{uuid.uuid4().hex[:8]}"
