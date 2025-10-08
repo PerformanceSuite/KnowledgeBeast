@@ -31,13 +31,16 @@ import time
 import logging
 import threading
 import types
-from typing import Dict, List, Tuple, Optional, Callable
+from pathlib import Path
+from typing import Dict, List, Tuple, Optional, Callable, Literal
 
 from knowledgebeast.core.config import KnowledgeBeastConfig
 from knowledgebeast.core.repository import DocumentRepository
 from knowledgebeast.core.cache_manager import CacheManager
-from knowledgebeast.core.query_engine import QueryEngine
+from knowledgebeast.core.query_engine import QueryEngine, HybridQueryEngine
 from knowledgebeast.core.indexer import DocumentIndexer
+from knowledgebeast.core.embeddings import EmbeddingEngine
+from knowledgebeast.core.vector_store import VectorStore
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -92,7 +95,11 @@ class KnowledgeBase:
     def __init__(
         self,
         config: Optional[KnowledgeBeastConfig] = None,
-        progress_callback: Optional[Callable[[str, int, int], None]] = None
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+        enable_vector: bool = True,
+        embedding_model: str = "all-MiniLM-L6-v2",
+        vector_cache_size: int = 1000,
+        persist_directory: Optional[str] = None
     ):
         """
         Initialize Knowledge Base with optional config and callbacks.
@@ -101,9 +108,14 @@ class KnowledgeBase:
             config: KnowledgeBeastConfig instance (uses defaults if None)
             progress_callback: Optional callback for progress updates
                               Signature: callback(message: str, current: int, total: int)
+            enable_vector: Enable vector embeddings and hybrid search (default: True)
+            embedding_model: Sentence-transformer model for embeddings (default: all-MiniLM-L6-v2)
+            vector_cache_size: Size of embedding cache (default: 1000)
+            persist_directory: Directory for persistent vector storage (default: None = in-memory)
         """
         self.config = config or KnowledgeBeastConfig()
         self.progress_callback = progress_callback if self.config.enable_progress_callbacks else None
+        self.enable_vector = enable_vector
 
         # Thread safety lock (reentrant for nested operations)
         self._lock = threading.RLock()
@@ -114,7 +126,40 @@ class KnowledgeBase:
             capacity=self.config.max_cache_size
         )
         self._query_engine = QueryEngine(self._repository)
-        self._indexer = DocumentIndexer(self.config, self._repository, self.progress_callback)
+
+        # Initialize vector components if enabled
+        self._embedding_engine: Optional[EmbeddingEngine] = None
+        self._vector_store: Optional[VectorStore] = None
+        self._embedding_model = embedding_model
+        self._vector_cache_size = vector_cache_size
+
+        if self.enable_vector:
+            logger.info(f"Initializing vector RAG components (model: {embedding_model})")
+            self._embedding_engine = EmbeddingEngine(
+                model_name=embedding_model,
+                cache_size=vector_cache_size
+            )
+
+            # Set up persist directory (default to .chroma in project root)
+            if persist_directory is None:
+                persist_directory = str(Path(self.config.cache_file).parent / ".chroma")
+
+            self._vector_store = VectorStore(
+                persist_directory=persist_directory,
+                collection_name="knowledgebeast_docs"
+            )
+
+            logger.info("Vector RAG components initialized successfully")
+
+        # Initialize indexer with vector components
+        self._indexer = DocumentIndexer(
+            self.config,
+            self._repository,
+            self.progress_callback,
+            enable_vector=enable_vector,
+            embedding_engine=self._embedding_engine,
+            vector_store=self._vector_store
+        )
 
         # Performance metrics
         self.last_access = time.time()
@@ -125,7 +170,11 @@ class KnowledgeBase:
             'warm_queries': 0,
             'last_warm_time': None,
             'total_documents': 0,
-            'total_terms': 0
+            'total_terms': 0,
+            'vector_queries': 0,
+            'keyword_queries': 0,
+            'hybrid_queries': 0,
+            'embeddings_generated': 0
         }
 
         # Auto-warm if configured
@@ -262,28 +311,58 @@ class KnowledgeBase:
         self.stats['total_documents'] = self._repository.document_count()
         self.stats['total_terms'] = self._repository.term_count()
 
-    def query(self, search_terms: str, use_cache: bool = True) -> List[Tuple[str, Dict]]:
+    def query(
+        self,
+        search_terms: str,
+        use_cache: bool = True,
+        mode: Literal['hybrid', 'vector', 'keyword'] = 'hybrid',
+        top_k: int = 10,
+        alpha: Optional[float] = None
+    ) -> List[Tuple[str, Dict]]:
         """
         Query the knowledge base for relevant documents with semantic caching.
 
         Args:
             search_terms: Search query string
             use_cache: If True, use cached results if available
+            mode: Search mode - 'hybrid' (default), 'vector', or 'keyword'
+                  - hybrid: Combines vector similarity and keyword matching (best of both)
+                  - vector: Pure semantic similarity using embeddings
+                  - keyword: Traditional term matching (backward compatible)
+            top_k: Number of top results to return (default: 10)
+            alpha: Weight for vector search in hybrid mode (0-1, default: 0.7)
+                   Higher values favor semantic similarity, lower favor exact matches
 
         Returns:
             List of (doc_id, document) tuples sorted by relevance
 
         Raises:
-            ValueError: If search_terms is empty
+            ValueError: If search_terms is empty or alpha is out of range
+
+        Notes:
+            - Hybrid mode (default) provides best results for most queries
+            - Vector mode is best for semantic/conceptual queries
+            - Keyword mode maintains backward compatibility with existing code
+            - Results are always returned as (doc_id, document) tuples for compatibility
         """
+        # Validate inputs
+        if not search_terms or not search_terms.strip():
+            raise ValueError("Search terms cannot be empty")
+
+        if alpha is not None and not (0 <= alpha <= 1):
+            raise ValueError("alpha must be between 0 and 1")
+
         # Update stats (thread-safe with lock)
         with self._lock:
             self.stats['queries'] += 1
             self.last_access = time.time()
 
+        # Generate cache key including mode
+        cache_key = f"{mode}:{alpha}:{search_terms}" if mode == 'hybrid' else f"{mode}:{search_terms}"
+
         # Check cache if enabled
         if use_cache:
-            cached_result = self._cache_manager.get(search_terms)
+            cached_result = self._cache_manager.get(cache_key)
             if cached_result is not None:
                 # Update local stats for backward compatibility
                 with self._lock:
@@ -291,13 +370,34 @@ class KnowledgeBase:
                     self.stats['cache_misses'] = self._cache_manager.stats['cache_misses']
                 return cached_result
 
-        # Execute query using query engine
+        # Execute query based on mode
         try:
-            results = self._query_engine.execute_query(search_terms)
+            # Use vector/hybrid search if enabled and mode is not keyword
+            if self.enable_vector and mode != 'keyword' and self._embedding_engine and self._vector_store:
+                if mode == 'vector':
+                    # Pure vector search using VectorStore
+                    results = self._vector_search(search_terms, top_k)
+                    with self._lock:
+                        self.stats['vector_queries'] += 1
+                elif mode == 'hybrid':
+                    # Hybrid search combining vector and keyword
+                    results = self._hybrid_search(search_terms, alpha or 0.7, top_k)
+                    with self._lock:
+                        self.stats['hybrid_queries'] += 1
+                else:
+                    # Fallback to keyword search
+                    results = self._query_engine.execute_query(search_terms)
+                    with self._lock:
+                        self.stats['keyword_queries'] += 1
+            else:
+                # Keyword search (backward compatible, or when vector is disabled)
+                results = self._query_engine.execute_query(search_terms)
+                with self._lock:
+                    self.stats['keyword_queries'] += 1
 
             # Cache results if enabled
             if use_cache:
-                self._cache_manager.put(search_terms, results)
+                self._cache_manager.put(cache_key, results)
 
             # Update local stats for backward compatibility
             with self._lock:
@@ -350,6 +450,10 @@ class KnowledgeBase:
     def clear_cache(self) -> None:
         """Clear query cache (useful for testing or memory management)."""
         self._cache_manager.clear()
+        # Reset local stats to match cache_manager
+        with self._lock:
+            self.stats['cache_hits'] = 0
+            self.stats['cache_misses'] = 0
         if self.config.verbose:
             print("🧹 Query cache cleared")
 
@@ -374,6 +478,102 @@ class KnowledgeBase:
             True if cache is stale, False otherwise
         """
         return self._indexer._is_cache_stale(cache_path)
+
+    def _vector_search(self, query: str, top_k: int = 10) -> List[Tuple[str, Dict]]:
+        """Execute pure vector similarity search.
+
+        Args:
+            query: Search query string
+            top_k: Number of top results to return
+
+        Returns:
+            List of (doc_id, document) tuples sorted by similarity
+        """
+        # Generate query embedding
+        query_embedding = self._embedding_engine.embed(query, use_cache=True, normalize=True)
+
+        # Query vector store
+        vector_results = self._vector_store.query(
+            query_embeddings=query_embedding,
+            n_results=top_k,
+            include=['distances', 'metadatas', 'documents']
+        )
+
+        # Extract document IDs from results
+        if not vector_results['ids'] or len(vector_results['ids']) == 0:
+            return []
+
+        doc_ids = vector_results['ids'][0]  # First query result
+
+        # Get documents from repository
+        results = []
+        for doc_id in doc_ids:
+            doc = self._repository.get_document(doc_id)
+            if doc:
+                results.append((doc_id, doc))
+
+        return results
+
+    def _hybrid_search(
+        self,
+        query: str,
+        alpha: float = 0.7,
+        top_k: int = 10
+    ) -> List[Tuple[str, Dict]]:
+        """Execute hybrid search combining vector and keyword search.
+
+        Args:
+            query: Search query string
+            alpha: Weight for vector search (0-1, default: 0.7)
+            top_k: Number of top results to return
+
+        Returns:
+            List of (doc_id, document) tuples sorted by combined score
+        """
+        # Get vector search results
+        vector_results = self._vector_search(query, top_k=top_k * 2)
+
+        # Get keyword search results
+        keyword_results = self._query_engine.execute_query(query)
+
+        # Normalize and combine scores
+        vector_scores = {}
+        if vector_results:
+            max_vector_rank = len(vector_results)
+            for rank, (doc_id, _) in enumerate(vector_results):
+                # Inverse rank scoring (1st = 1.0, 2nd = 0.5, etc.)
+                vector_scores[doc_id] = 1.0 - (rank / max_vector_rank)
+
+        keyword_scores = {}
+        if keyword_results:
+            # Count term matches for keyword scoring
+            query_terms = set(query.lower().split())
+            for doc_id, doc in keyword_results:
+                content_lower = doc['content'].lower()
+                matches = sum(1 for term in query_terms if term in content_lower)
+                keyword_scores[doc_id] = matches / len(query_terms) if query_terms else 0
+
+        # Combine scores
+        all_doc_ids = set(vector_scores.keys()) | set(keyword_scores.keys())
+        combined_scores = {}
+
+        for doc_id in all_doc_ids:
+            v_score = vector_scores.get(doc_id, 0.0)
+            k_score = keyword_scores.get(doc_id, 0.0)
+            combined_scores[doc_id] = alpha * v_score + (1 - alpha) * k_score
+
+        # Sort by combined score
+        sorted_doc_ids = sorted(combined_scores.items(), key=lambda x: x[1], reverse=True)
+        top_doc_ids = sorted_doc_ids[:top_k]
+
+        # Get documents
+        results = []
+        for doc_id, score in top_doc_ids:
+            doc = self._repository.get_document(doc_id)
+            if doc:
+                results.append((doc_id, doc))
+
+        return results
 
     # ============================================================================
     # Backward Compatibility Properties

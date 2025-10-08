@@ -7,7 +7,7 @@ and building the search index with parallel processing support.
 import logging
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Callable
+from typing import Dict, List, Optional, Tuple, Callable, TYPE_CHECKING
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
@@ -20,6 +20,10 @@ from knowledgebeast.core.constants import (
     RETRY_MAX_WAIT_SECONDS,
     RETRY_MULTIPLIER,
 )
+
+if TYPE_CHECKING:
+    from knowledgebeast.core.embeddings import EmbeddingEngine
+    from knowledgebeast.core.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +55,10 @@ class DocumentIndexer:
         self,
         config: KnowledgeBeastConfig,
         repository: DocumentRepository,
-        progress_callback: Optional[Callable[[str, int, int], None]] = None
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+        enable_vector: bool = False,
+        embedding_engine: Optional['EmbeddingEngine'] = None,
+        vector_store: Optional['VectorStore'] = None
     ) -> None:
         """Initialize document indexer.
 
@@ -60,11 +67,17 @@ class DocumentIndexer:
             repository: Document repository instance
             progress_callback: Optional callback for progress updates
                               Signature: callback(message: str, current: int, total: int)
+            enable_vector: Enable vector embedding generation during ingestion
+            embedding_engine: EmbeddingEngine instance for generating embeddings
+            vector_store: VectorStore instance for storing embeddings
         """
         self.config = config
         self.repository = repository
         self.converter = get_document_converter()
         self.progress_callback = progress_callback if config.enable_progress_callbacks else None
+        self.enable_vector = enable_vector
+        self.embedding_engine = embedding_engine
+        self.vector_store = vector_store
 
     def ingest_all(self) -> None:
         """Ingest all documents from configured knowledge directories.
@@ -235,11 +248,72 @@ class DocumentIndexer:
         # Atomically replace repository contents
         self.repository.replace_index(new_documents, new_index)
 
+        # Generate and store embeddings if vector search is enabled
+        if self.enable_vector and self.embedding_engine and self.vector_store:
+            logger.info("Generating vector embeddings for documents...")
+            if self.config.verbose:
+                print("🔮 Generating vector embeddings...")
+
+            # Reset vector store collection
+            self.vector_store.reset()
+
+            # Generate embeddings for all documents
+            doc_ids = list(new_documents.keys())
+            doc_contents = [new_documents[doc_id]['content'] for doc_id in doc_ids]
+            doc_names = [new_documents[doc_id]['name'] for doc_id in doc_ids]
+
+            # Generate embeddings in batches
+            batch_size = 32
+            total_docs = len(doc_ids)
+            embeddings_generated = 0
+
+            for i in range(0, total_docs, batch_size):
+                batch_ids = doc_ids[i:i + batch_size]
+                batch_contents = doc_contents[i:i + batch_size]
+                batch_names = doc_names[i:i + batch_size]
+
+                # Generate embeddings for batch
+                batch_embeddings = self.embedding_engine.embed_batch(
+                    batch_contents,
+                    batch_size=batch_size,
+                    use_cache=True,
+                    normalize=True
+                )
+
+                # Create metadata for batch
+                batch_metadatas = [
+                    {'name': name, 'doc_id': doc_id}
+                    for name, doc_id in zip(batch_names, batch_ids)
+                ]
+
+                # Store in vector store
+                self.vector_store.add(
+                    ids=batch_ids,
+                    embeddings=batch_embeddings,
+                    documents=batch_contents,
+                    metadatas=batch_metadatas
+                )
+
+                embeddings_generated += len(batch_ids)
+                self._report_progress(
+                    f"Generating embeddings ({embeddings_generated}/{total_docs})",
+                    embeddings_generated,
+                    total_docs
+                )
+
+            logger.info(f"Generated {embeddings_generated} embeddings")
+            if self.config.verbose:
+                print(f"✅ Generated {embeddings_generated} embeddings\n")
+
         logger.info(f"Ingestion complete! {len(new_documents)} documents, {len(new_index)} terms")
         if self.config.verbose:
             print(f"\n✅ Ingestion complete!")
             print(f"   - {self.repository.document_count()} documents indexed")
-            print(f"   - {self.repository.term_count()} unique terms\n")
+            print(f"   - {self.repository.term_count()} unique terms")
+            if self.enable_vector and self.vector_store:
+                print(f"   - {self.vector_store.count()} vector embeddings stored\n")
+            else:
+                print()
 
     @retry(
         stop=stop_after_attempt(MAX_RETRY_ATTEMPTS),

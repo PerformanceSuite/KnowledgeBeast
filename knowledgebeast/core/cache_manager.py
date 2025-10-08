@@ -81,6 +81,7 @@ class CacheManager(Generic[T]):
     def clear(self) -> None:
         """Clear all cached results and reset statistics."""
         self.cache.clear()
+        self.reset_stats()
         logger.info("Query cache cleared")
 
     def get_stats(self) -> Dict:
