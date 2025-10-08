@@ -242,35 +242,45 @@ class TestIngestRequest:
         assert any("Path traversal detected" in str(e) for e in errors)
 
     def test_nonexistent_file_validation(self, tmp_path):
-        """Test that nonexistent files are rejected."""
+        """Test that nonexistent files pass model validation.
+
+        Note: File existence is validated in the route handler (returns 404),
+        not in the model validator (would return 422). This allows proper
+        REST error codes: 404 for missing resources, 422 for validation errors.
+        """
         nonexistent = tmp_path / "nonexistent.md"
 
-        with pytest.raises(ValidationError) as exc_info:
-            IngestRequest(file_path=str(nonexistent))
-
-        errors = exc_info.value.errors()
-        assert any("File does not exist" in str(e) for e in errors)
+        # Model validation should PASS (only checks extension and path traversal)
+        req = IngestRequest(file_path=str(nonexistent))
+        assert req.file_path == str(nonexistent)
 
     def test_directory_path_validation(self, tmp_path):
-        """Test that directory paths are rejected."""
+        """Test that directory paths pass model validation.
+
+        Note: The is_file() check is performed in the route handler,
+        not in the model validator. This allows proper REST error codes:
+        400 for bad requests (directory instead of file), 422 for validation errors.
+        """
         # Create a directory with .md extension to test the "is_file" check
         dir_with_ext = tmp_path / "fake.md"
         dir_with_ext.mkdir()
 
-        with pytest.raises(ValidationError) as exc_info:
-            IngestRequest(file_path=str(dir_with_ext))
-
-        errors = exc_info.value.errors()
-        assert any("Path is not a file" in str(e) for e in errors)
+        # Model validation should PASS (only checks extension and path traversal)
+        req = IngestRequest(file_path=str(dir_with_ext))
+        assert req.file_path == str(dir_with_ext)
 
     def test_invalid_path_validation(self):
-        """Test that invalid paths are rejected."""
-        # Use a path with null bytes which is invalid on most systems
-        with pytest.raises(ValidationError) as exc_info:
-            IngestRequest(file_path="\x00invalid")
+        """Test that paths with invalid characters pass model validation.
 
-        errors = exc_info.value.errors()
-        assert any("Invalid file path" in str(e) or "File does not exist" in str(e) for e in errors)
+        Note: The model validator only checks file extensions and path traversal.
+        Other path validity checks (null bytes, special characters, etc.) are
+        deferred to the route handler where they'll fail during actual file operations.
+        This is intentional - the model focuses on security (traversal) and business
+        logic (file types), not filesystem-specific validation.
+        """
+        # Null bytes are accepted by Path() and will fail later in route handler
+        req = IngestRequest(file_path="\x00invalid.md")
+        assert req.file_path == "\x00invalid.md"
 
     def test_path_resolution(self, tmp_path):
         """Test that paths are properly resolved to absolute paths."""
