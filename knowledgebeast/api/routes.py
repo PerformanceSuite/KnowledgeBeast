@@ -336,9 +336,7 @@ async def query_knowledge_base(
         loop = asyncio.get_event_loop()
         results = await loop.run_in_executor(
             _executor,
-            kb.query,
-            query_request.query,
-            query_request.use_cache
+            lambda: kb.query(query_request.query, use_cache=query_request.use_cache)
         )
 
         # Convert results to QueryResult models
