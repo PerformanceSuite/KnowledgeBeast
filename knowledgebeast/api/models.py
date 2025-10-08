@@ -156,31 +156,27 @@ class IngestRequest(BaseModel):
     @field_validator('file_path')
     @classmethod
     def validate_file_path(cls, v: str) -> str:
-        """Validate file path to prevent path traversal attacks."""
-        # Convert to Path object
-        try:
-            path = Path(v).resolve()
-        except Exception as e:
-            raise ValueError(f"Invalid file path: {e}")
+        """Validate file path to prevent path traversal attacks.
 
+        Note: File existence is checked in the route handler, not here,
+        to allow proper 404 error responses instead of 422 validation errors.
+        """
         # Check for path traversal attempts
         if '..' in v:
             raise ValueError("Path traversal detected: '..' not allowed")
+
+        # Convert to Path object for extension checking
+        try:
+            path = Path(v)
+        except Exception as e:
+            raise ValueError(f"Invalid file path: {e}")
 
         # Ensure it's a valid file extension
         allowed_extensions = {'.md', '.txt', '.pdf', '.docx', '.html', '.htm'}
         if path.suffix.lower() not in allowed_extensions:
             raise ValueError(f"Unsupported file type. Allowed: {', '.join(allowed_extensions)}")
 
-        # Check file exists
-        if not path.exists():
-            raise ValueError(f"File does not exist: {path}")
-
-        # Check it's a file (not directory)
-        if not path.is_file():
-            raise ValueError(f"Path is not a file: {path}")
-
-        return str(path)
+        return v
 
 
 class BatchIngestRequest(BaseModel):
