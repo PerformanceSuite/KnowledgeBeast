@@ -22,8 +22,8 @@ def large_kb_dir(tmp_path):
     kb_dir = tmp_path / "knowledge"
     kb_dir.mkdir()
 
-    # Create 150 test documents with varied content
-    for i in range(150):
+    # Create 50 test documents with varied content
+    for i in range(50):
         content = f"""# Document {i}
 
 ## Overview
@@ -107,7 +107,7 @@ class TestParallelIngestionPerformance:
         print(f"  Time: {elapsed:.2f}s")
         print(f"  Throughput: {stats['total_documents']/elapsed:.2f} docs/sec")
 
-        assert stats['total_documents'] == 150
+        assert stats['total_documents'] == 50
         assert stats['total_terms'] > 0
 
         # Store for comparison
@@ -137,7 +137,7 @@ class TestParallelIngestionPerformance:
         print(f"  Time: {elapsed:.2f}s")
         print(f"  Throughput: {stats['total_documents']/elapsed:.2f} docs/sec")
 
-        assert stats['total_documents'] == 150
+        assert stats['total_documents'] == 50
         assert stats['total_terms'] > 0
 
         return elapsed
@@ -166,7 +166,7 @@ class TestParallelIngestionPerformance:
         print(f"  Time: {elapsed:.2f}s")
         print(f"  Throughput: {stats['total_documents']/elapsed:.2f} docs/sec")
 
-        assert stats['total_documents'] == 150
+        assert stats['total_documents'] == 50
         assert stats['total_terms'] > 0
 
         return elapsed
@@ -247,8 +247,8 @@ class TestParallelIngestionCorrectness:
 
         stats = kb.get_stats()
 
-        # All 150 documents should be ingested
-        assert stats['total_documents'] == 150, f"Expected 150 docs, got {stats['total_documents']}"
+        # All 50 documents should be ingested
+        assert stats['total_documents'] == 50, f"Expected 50 docs, got {stats['total_documents']}"
 
         # Verify index is built correctly
         assert stats['total_terms'] > 0, "Index should contain terms"

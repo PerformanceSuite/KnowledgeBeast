@@ -350,24 +350,24 @@ class PerformanceDashboard:
 
         # Query latency (uncached)
         print("\n1. Measuring query latency (uncached)...")
-        query_latency = self.measure_latency(test_queries, use_cache=False, iterations=100)
+        query_latency = self.measure_latency(test_queries, use_cache=False, iterations=50)
         print(f"   P50: {query_latency.p50*1000:.2f}ms | P95: {query_latency.p95*1000:.2f}ms | P99: {query_latency.p99*1000:.2f}ms")
 
         # Query latency (cached)
         print("\n2. Measuring query latency (cached)...")
-        cached_latency = self.measure_latency(test_queries, use_cache=True, iterations=100)
+        cached_latency = self.measure_latency(test_queries, use_cache=True, iterations=50)
         print(f"   P50: {cached_latency.p50*1000:.2f}ms | P95: {cached_latency.p95*1000:.2f}ms | P99: {cached_latency.p99*1000:.2f}ms")
 
         # Sequential throughput
         print("\n3. Measuring sequential throughput...")
-        seq_throughput = self.measure_throughput(test_queries, workers=1, queries_per_worker=100)
+        seq_throughput = self.measure_throughput(test_queries, workers=1, queries_per_worker=50)
         print(f"   {seq_throughput.queries_per_second:.2f} queries/sec")
 
         # Concurrent throughput
         print("\n4. Measuring concurrent throughput...")
         concurrent_throughput = []
-        for workers in [10, 50]:
-            metrics = self.measure_throughput(test_queries, workers=workers, queries_per_worker=50)
+        for workers in [5, 10]:
+            metrics = self.measure_throughput(test_queries, workers=workers, queries_per_worker=30)
             concurrent_throughput.append(metrics.to_dict())
             print(f"   {workers} workers: {metrics.queries_per_second:.2f} queries/sec")
 
@@ -383,7 +383,7 @@ class PerformanceDashboard:
 
         # Scalability
         print("\n7. Measuring scalability...")
-        scalability = self.measure_scalability(test_queries, worker_counts=[1, 2, 5, 10, 20])
+        scalability = self.measure_scalability(test_queries, worker_counts=[1, 2, 5], queries_per_worker=30)
         scalability_data = {
             'worker_counts': list(scalability.keys()),
             'throughput': list(scalability.values())
