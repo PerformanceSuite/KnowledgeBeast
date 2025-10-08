@@ -19,6 +19,12 @@ class KnowledgeBeastConfig:
     - KB_HEARTBEAT_INTERVAL: Heartbeat interval in seconds
     - KB_AUTO_WARM: Auto-warm on initialization (true/false)
     - KB_MAX_WORKERS: Number of parallel workers for document ingestion
+    - KB_EMBEDDING_MODEL: Embedding model name
+    - KB_VECTOR_SEARCH_MODE: Search mode (vector, keyword, hybrid)
+    - KB_CHUNK_SIZE: Document chunk size for embeddings
+    - KB_CHUNK_OVERLAP: Chunk overlap size
+    - KB_USE_VECTOR_SEARCH: Enable vector search (true/false)
+    - KB_CHROMADB_PATH: Path to ChromaDB storage
 
     Attributes:
         knowledge_dirs: List of knowledge base directories to ingest
@@ -30,6 +36,12 @@ class KnowledgeBeastConfig:
         enable_progress_callbacks: Enable progress callbacks for long operations
         verbose: Enable verbose logging
         max_workers: Maximum number of parallel workers for document ingestion (default: CPU count)
+        embedding_model: Sentence-transformer model for embeddings
+        vector_search_mode: Search mode (vector, keyword, hybrid)
+        chunk_size: Document chunk size for embeddings
+        chunk_overlap: Chunk overlap size
+        use_vector_search: Enable vector search (default: True for v2+)
+        chromadb_path: Path to ChromaDB persistent storage
     """
 
     # Knowledge base directories (supports multiple)
@@ -59,6 +71,14 @@ class KnowledgeBeastConfig:
     verbose: bool = True
     max_workers: Optional[int] = None  # None = auto-detect CPU count
 
+    # Vector RAG settings (v2+)
+    embedding_model: str = "all-MiniLM-L6-v2"
+    vector_search_mode: str = "hybrid"  # vector, keyword, hybrid
+    chunk_size: int = 1000
+    chunk_overlap: int = 200
+    use_vector_search: bool = True
+    chromadb_path: Path = field(default_factory=lambda: Path("./data/chromadb"))
+
     def __post_init__(self) -> None:
         """Validate and load from environment variables."""
         # Load from environment variables if set
@@ -80,6 +100,25 @@ class KnowledgeBeastConfig:
         if env_max_workers := os.getenv('KB_MAX_WORKERS'):
             self.max_workers = int(env_max_workers)
 
+        # Vector RAG environment variables
+        if env_embedding_model := os.getenv('KB_EMBEDDING_MODEL'):
+            self.embedding_model = env_embedding_model
+
+        if env_search_mode := os.getenv('KB_VECTOR_SEARCH_MODE'):
+            self.vector_search_mode = env_search_mode
+
+        if env_chunk_size := os.getenv('KB_CHUNK_SIZE'):
+            self.chunk_size = int(env_chunk_size)
+
+        if env_chunk_overlap := os.getenv('KB_CHUNK_OVERLAP'):
+            self.chunk_overlap = int(env_chunk_overlap)
+
+        if env_use_vector := os.getenv('KB_USE_VECTOR_SEARCH'):
+            self.use_vector_search = env_use_vector.lower() in ('true', '1', 'yes')
+
+        if env_chromadb_path := os.getenv('KB_CHROMADB_PATH'):
+            self.chromadb_path = Path(env_chromadb_path)
+
         # Auto-detect CPU count if not set
         if self.max_workers is None:
             self.max_workers = multiprocessing.cpu_count()
@@ -97,6 +136,19 @@ class KnowledgeBeastConfig:
         if self.max_workers <= 0:
             raise ValueError("max_workers must be positive")
 
+        # Validate vector RAG settings
+        if self.vector_search_mode not in ('vector', 'keyword', 'hybrid'):
+            raise ValueError("vector_search_mode must be 'vector', 'keyword', or 'hybrid'")
+
+        if self.chunk_size <= 0:
+            raise ValueError("chunk_size must be positive")
+
+        if self.chunk_overlap < 0:
+            raise ValueError("chunk_overlap must be non-negative")
+
+        if self.chunk_overlap >= self.chunk_size:
+            raise ValueError("chunk_overlap must be less than chunk_size")
+
     def get_all_knowledge_paths(self) -> List[Path]:
         """Get all knowledge directory paths.
 
@@ -113,7 +165,7 @@ class KnowledgeBeastConfig:
         logger.info(f"KnowledgeBeast Configuration: dirs={len(self.knowledge_dirs)}, "
                    f"cache={self.cache_file}, max_cache={self.max_cache_size}, "
                    f"heartbeat={self.heartbeat_interval}s, auto_warm={self.auto_warm}, "
-                   f"max_workers={self.max_workers}")
+                   f"max_workers={self.max_workers}, vector_search={self.use_vector_search}")
 
         if not self.verbose:
             return
@@ -128,6 +180,14 @@ class KnowledgeBeastConfig:
         print(f"   Progress Callbacks: {self.enable_progress_callbacks}")
         print(f"   Verbose: {self.verbose}")
         print(f"   Max Workers: {self.max_workers}")
+        print()
+        print("🔍 Vector RAG Configuration:")
+        print(f"   Use Vector Search: {self.use_vector_search}")
+        print(f"   Embedding Model: {self.embedding_model}")
+        print(f"   Search Mode: {self.vector_search_mode}")
+        print(f"   Chunk Size: {self.chunk_size}")
+        print(f"   Chunk Overlap: {self.chunk_overlap}")
+        print(f"   ChromaDB Path: {self.chromadb_path}")
         print()
 
 
