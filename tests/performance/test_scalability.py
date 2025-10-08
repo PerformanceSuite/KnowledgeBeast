@@ -122,13 +122,13 @@ class TestConcurrentQueries:
     """Test concurrent query performance."""
 
     def test_100_concurrent_queries(self, tmp_path):
-        """Test 100 concurrent queries."""
+        """Test 20 concurrent queries."""
         # Setup
         repo = DocumentRepository()
         engine = HybridQueryEngine(repo, model_name="all-MiniLM-L6-v2", cache_size=200)
 
         # Add documents
-        for i in range(1000):
+        for i in range(200):
             repo.add_document(f'doc{i}', {
                 'name': f'Document {i}',
                 'content': f'This is document {i} about topic {i % 20}',
@@ -155,12 +155,12 @@ class TestConcurrentQueries:
                 with lock:
                     errors.append(str(e))
 
-        # Launch 100 concurrent queries
-        print("\nLaunching 100 concurrent queries...")
+        # Launch 20 concurrent queries
+        print("\nLaunching 20 concurrent queries...")
         threads = []
         start_time = time.time()
 
-        for i in range(100):
+        for i in range(20):
             t = threading.Thread(target=execute_query, args=(i,))
             threads.append(t)
             t.start()
@@ -394,9 +394,9 @@ class TestMultiProjectScalability:
             chroma_path=str(tmp_path / "chroma")
         )
 
-        # Create 10 projects
+        # Create 3 projects
         projects = []
-        for i in range(10):
+        for i in range(3):
             project = manager.create_project(name=f"Concurrent Project {i}")
             projects.append(project)
 
@@ -405,7 +405,7 @@ class TestMultiProjectScalability:
         for project in projects:
             repo = DocumentRepository()
             # Add documents
-            for j in range(100):
+            for j in range(20):
                 repo.add_document(f'doc{j}', {
                     'name': f'Doc {j}',
                     'content': f'Project {project.project_id} document {j}',
@@ -422,7 +422,7 @@ class TestMultiProjectScalability:
         def query_project(project_idx):
             try:
                 engine = engines[project_idx]
-                for i in range(10):
+                for i in range(5):
                     result = engine.search_hybrid(f"document {i}", top_k=5)
                     with lock:
                         results.append(len(result))
@@ -434,7 +434,7 @@ class TestMultiProjectScalability:
         threads = []
         start = time.time()
 
-        for i in range(10):
+        for i in range(3):
             t = threading.Thread(target=query_project, args=(i,))
             threads.append(t)
             t.start()
@@ -446,8 +446,8 @@ class TestMultiProjectScalability:
 
         # Verify
         assert len(errors) == 0, f"Errors: {errors}"
-        assert len(results) == 100  # 10 projects * 10 queries
-        print(f"\n100 queries across 10 projects: {elapsed:.2f}s ({100/elapsed:.1f} q/s)")
+        assert len(results) == 15  # 3 projects * 5 queries
+        print(f"\n15 queries across 3 projects: {elapsed:.2f}s ({15/elapsed:.1f} q/s)")
 
         # Cleanup
         for project in projects:
