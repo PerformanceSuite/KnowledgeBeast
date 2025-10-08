@@ -64,8 +64,9 @@ from knowledgebeast.core.project_manager import ProjectManager
 
 logger = logging.getLogger(__name__)
 
-# Initialize router
-router = APIRouter()
+# Initialize routers
+router = APIRouter()  # V1 routes (legacy)
+router_v2 = APIRouter()  # V2 routes (projects)
 
 # Initialize rate limiter
 limiter = Limiter(key_func=get_remote_address)
@@ -918,12 +919,13 @@ async def get_collection_info(
 # ============================================================================
 
 
-@router.post(
-    "/api/v2/projects",
+@router_v2.post(
+    "",
     response_model=ProjectResponse,
     tags=["projects"],
     summary="Create new project",
     description="Create a new isolated project with its own knowledge base",
+    status_code=201
 )
 @limiter.limit("10/minute")
 async def create_project(
@@ -971,8 +973,8 @@ async def create_project(
         )
 
 
-@router.get(
-    "/api/v2/projects",
+@router_v2.get(
+    "",
     response_model=ProjectListResponse,
     tags=["projects"],
     summary="List all projects",
@@ -1013,8 +1015,8 @@ async def list_projects(
         )
 
 
-@router.get(
-    "/api/v2/projects/{project_id}",
+@router_v2.get(
+    "/{project_id}",
     response_model=ProjectResponse,
     tags=["projects"],
     summary="Get project details",
@@ -1062,8 +1064,8 @@ async def get_project(
         )
 
 
-@router.put(
-    "/api/v2/projects/{project_id}",
+@router_v2.put(
+    "/{project_id}",
     response_model=ProjectResponse,
     tags=["projects"],
     summary="Update project",
@@ -1126,8 +1128,8 @@ async def update_project(
         )
 
 
-@router.delete(
-    "/api/v2/projects/{project_id}",
+@router_v2.delete(
+    "/{project_id}",
     response_model=ProjectDeleteResponse,
     tags=["projects"],
     summary="Delete project",
@@ -1179,8 +1181,8 @@ async def delete_project(
         )
 
 
-@router.post(
-    "/api/v2/projects/{project_id}/query",
+@router_v2.post(
+    "/{project_id}/query",
     response_model=QueryResponse,
     tags=["projects"],
     summary="Project-scoped query",
@@ -1218,14 +1220,68 @@ async def project_query(
                 detail=f"Project not found: {project_id}"
             )
 
-        # Get project cache
+        # Get project cache and check for cached results
         cache = pm.get_project_cache(project_id)
+        cache_key = f"{query_request.query}:{query_request.limit}"
 
-        # For now, return empty results as placeholder
-        # TODO: Implement actual vector search with ChromaDB
+        cached_results = cache.get(cache_key) if query_request.use_cache else None
+        if cached_results is not None:
+            logger.debug(f"Cache hit for project {project_id} query: {query_request.query}")
+            return QueryResponse(
+                results=cached_results,
+                count=len(cached_results),
+                cached=True,
+                query=query_request.query
+            )
+
+        # Get ChromaDB collection for this project
+        collection = await loop.run_in_executor(_executor, pm.get_project_collection, project_id)
+
+        if not collection:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to get collection for project: {project_id}"
+            )
+
+        # Execute vector search using ChromaDB's native query
+        # ChromaDB automatically handles embedding generation for the query text
+        def query_collection():
+            result = collection.query(
+                query_texts=[query_request.query],
+                n_results=min(query_request.limit, 100)  # Cap at 100 results
+            )
+            return result
+
+        chroma_results = await loop.run_in_executor(_executor, query_collection)
+
+        # Convert ChromaDB results to QueryResult format
+        query_results = []
+
+        # ChromaDB returns: {'ids': [[...]], 'documents': [[...]], 'metadatas': [[...]], 'distances': [[...]]}
+        ids = chroma_results.get('ids', [[]])[0]
+        documents = chroma_results.get('documents', [[]])[0]
+        metadatas = chroma_results.get('metadatas', [[]])[0]
+        distances = chroma_results.get('distances', [[]])[0]
+
+        for i, doc_id in enumerate(ids):
+            content = documents[i] if i < len(documents) else ""
+            metadata = metadatas[i] if i < len(metadatas) else {}
+
+            query_results.append(QueryResult(
+                doc_id=doc_id,
+                content=content,
+                name=metadata.get('name', 'Unknown'),
+                path=metadata.get('path', ''),
+                kb_dir=metadata.get('kb_dir', ''),
+            ))
+
+        # Cache results if caching enabled
+        if query_request.use_cache:
+            cache.put(cache_key, query_results)
+
         return QueryResponse(
-            results=[],
-            count=0,
+            results=query_results,
+            count=len(query_results),
             cached=False,
             query=query_request.query
         )
@@ -1240,8 +1296,8 @@ async def project_query(
         )
 
 
-@router.post(
-    "/api/v2/projects/{project_id}/ingest",
+@router_v2.post(
+    "/{project_id}/ingest",
     response_model=IngestResponse,
     tags=["projects"],
     summary="Project-scoped ingestion",
@@ -1286,15 +1342,69 @@ async def project_ingest(
                 detail="Either file_path or content must be provided"
             )
 
-        # For now, return success as placeholder
-        # TODO: Implement actual document ingestion with ChromaDB
-        doc_id = ingest_request.file_path or f"doc_{time.time()}"
+        # Get ChromaDB collection for this project
+        collection = await loop.run_in_executor(_executor, pm.get_project_collection, project_id)
+
+        if not collection:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to get collection for project: {project_id}"
+            )
+
+        # Prepare document content and metadata
+        if ingest_request.content:
+            # Direct content ingestion
+            doc_content = ingest_request.content
+            doc_id = f"doc_{int(time.time() * 1000)}"
+            file_path = "inline_content"
+        else:
+            # File-based ingestion
+            file_path_obj = Path(ingest_request.file_path)
+            if not file_path_obj.exists():
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"File not found: {ingest_request.file_path}"
+                )
+
+            # Read file content
+            try:
+                with open(file_path_obj, 'r', encoding='utf-8') as f:
+                    doc_content = f.read()
+                file_path = str(file_path_obj)
+                doc_id = str(file_path_obj)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Failed to read file: {str(e)}"
+                )
+
+        # Prepare metadata
+        doc_metadata = ingest_request.metadata or {}
+        doc_metadata.update({
+            'name': Path(file_path).name,
+            'path': file_path,
+            'kb_dir': str(Path(file_path).parent) if ingest_request.file_path else '',
+            'ingested_at': datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        })
+
+        # Add document to ChromaDB collection
+        # ChromaDB automatically generates embeddings using the collection's embedding function
+        def add_to_collection():
+            collection.add(
+                documents=[doc_content],
+                ids=[doc_id],
+                metadatas=[doc_metadata]
+            )
+
+        await loop.run_in_executor(_executor, add_to_collection)
+
+        logger.info(f"Ingested document into project {project_id}: {doc_id}")
 
         return IngestResponse(
             success=True,
-            file_path=ingest_request.file_path or "inline_content",
+            file_path=file_path,
             doc_id=doc_id,
-            message="Document ingestion placeholder - implementation pending"
+            message=f"Document successfully ingested into project {project.name}"
         )
 
     except HTTPException:

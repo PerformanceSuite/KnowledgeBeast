@@ -159,7 +159,11 @@ class E2ETestSuite:
             max_retries = 30
             for i in range(max_retries):
                 try:
-                    response = requests.get(f"{API_BASE_URL}/health", timeout=1)
+                    response = requests.get(
+                        f"{API_BASE_URL}/health",
+                        headers={'X-API-Key': API_KEY},
+                        timeout=1
+                    )
                     if response.status_code == 200:
                         print_pass(f"API server started successfully (took {i+1}s)")
                         self.results['passed'] += 1
@@ -184,7 +188,11 @@ class E2ETestSuite:
         print_header("TEST 2: Health Endpoint")
 
         try:
-            response = requests.get(f"{API_BASE_URL}/health", timeout=5)
+            response = requests.get(
+                f"{API_BASE_URL}/health",
+                headers={'X-API-Key': API_KEY},
+                timeout=5
+            )
 
             if response.status_code == 200:
                 data = response.json()

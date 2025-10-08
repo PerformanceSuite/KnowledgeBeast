@@ -36,7 +36,7 @@ from knowledgebeast.api.middleware import (
     TimingMiddleware,
 )
 from knowledgebeast.api.models import ErrorResponse
-from knowledgebeast.api.routes import cleanup_executor, cleanup_heartbeat, get_kb_instance, router
+from knowledgebeast.api.routes import cleanup_executor, cleanup_heartbeat, get_kb_instance, router, router_v2
 
 # Setup logging
 logging.basicConfig(
@@ -238,8 +238,8 @@ def create_app() -> FastAPI:
     # Include routers with API versioning
     # V1 routes (legacy)
     app.include_router(router, prefix="/api/v1")
-    # Also include router without prefix to support /api/v2 routes directly
-    app.include_router(router)
+    # V2 routes (multi-project API)
+    app.include_router(router_v2, prefix="/api/v2/projects")
 
     # Mount static files for web UI
     static_dir = Path(__file__).parent.parent / "web" / "static"
