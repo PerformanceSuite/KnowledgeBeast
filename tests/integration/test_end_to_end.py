@@ -289,16 +289,17 @@ class TestHybridSearchWorkflows:
             for term in set(terms):
                 repo.index_term(term, doc_id)
 
-        # Search for synonym "automobile" - keyword won't find "car_doc" content about "cars"
-        # but vector search should find both
+        # Search for synonym "automobile" - vector search uses semantic similarity
+        # to find related documents, while keyword search requires exact term matches
         vector_results = engine.search_vector("car", top_k=2)
-        keyword_results = engine.search_keyword("automobile")
+        keyword_results = engine.search_keyword("vehicles")
 
         # Vector should find both documents (semantic similarity)
         assert len(vector_results) >= 1
 
-        # Keyword might only find exact matches
+        # Keyword should find documents with the exact term "vehicles"
         assert len(keyword_results) >= 1
+        assert 'vehicle_doc' in [r[0] for r in keyword_results]
 
     def test_alpha_parameter_effect(self):
         """Test effect of alpha parameter on hybrid search."""
@@ -532,9 +533,13 @@ class TestDataConsistency:
         """Test vector store persists data correctly."""
         chroma_path = tmp_path / "chroma"
 
-        # Create and populate store
-        store1 = VectorStore(persist_directory=chroma_path, collection_name="test")
+        # Create and populate store with unique collection name
+        collection_name = f"test_persistence_{id(tmp_path)}"
+        store1 = VectorStore(persist_directory=chroma_path, collection_name=collection_name)
         engine = EmbeddingEngine()
+
+        # Ensure clean state
+        store1.reset()
 
         emb = engine.embed("Test document")
         store1.add(ids="doc1", embeddings=emb, documents="Test document")
@@ -543,7 +548,7 @@ class TestDataConsistency:
         assert count1 == 1
 
         # Create new instance (should load persisted data)
-        store2 = VectorStore(persist_directory=chroma_path, collection_name="test")
+        store2 = VectorStore(persist_directory=chroma_path, collection_name=collection_name)
         count2 = store2.count()
 
         assert count2 == count1
