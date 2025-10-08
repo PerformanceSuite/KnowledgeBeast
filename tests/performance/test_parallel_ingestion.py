@@ -273,7 +273,8 @@ class TestParallelIngestionCorrectness:
         kb = KnowledgeBase(config)
         kb.ingest_all()
 
-        # Test various queries
+        # Test various queries using keyword mode to test exact matching
+        # (hybrid/vector mode may return semantically similar results even for nonsense terms)
         test_queries = [
             ("audio processing", True),
             ("video analysis", True),
@@ -282,7 +283,7 @@ class TestParallelIngestionCorrectness:
         ]
 
         for query, should_find in test_queries:
-            results = kb.query(query)
+            results = kb.query(query, mode='keyword')
             if should_find:
                 assert len(results) > 0, f"Should find results for '{query}'"
             else:
@@ -290,6 +291,9 @@ class TestParallelIngestionCorrectness:
 
     def test_parallel_vs_sequential_equivalence(self, small_kb_dir, tmp_path):
         """Verify parallel and sequential produce same results."""
+        # Disable vector search to avoid ChromaDB collection conflicts
+        # and ensure deterministic keyword-based results
+
         # Sequential
         config_seq = KnowledgeBeastConfig(
             knowledge_dirs=[small_kb_dir],
@@ -298,7 +302,7 @@ class TestParallelIngestionCorrectness:
             cache_file=str(tmp_path / "cache_seq_equiv.json"),
             max_workers=1
         )
-        kb_seq = KnowledgeBase(config_seq)
+        kb_seq = KnowledgeBase(config_seq, enable_vector=False)
         kb_seq.ingest_all()
         stats_seq = kb_seq.get_stats()
 
@@ -310,7 +314,7 @@ class TestParallelIngestionCorrectness:
             cache_file=str(tmp_path / "cache_par_equiv.json"),
             max_workers=4
         )
-        kb_par = KnowledgeBase(config_par)
+        kb_par = KnowledgeBase(config_par, enable_vector=False)
         kb_par.ingest_all()
         stats_par = kb_par.get_stats()
 
@@ -320,10 +324,10 @@ class TestParallelIngestionCorrectness:
         # Same number of terms (index should be identical)
         assert stats_seq['total_terms'] == stats_par['total_terms']
 
-        # Query results should be equivalent
+        # Query results should be equivalent (using keyword mode for deterministic results)
         for query in ["small", "test", "category_1", "doc5"]:
-            results_seq = kb_seq.query(query)
-            results_par = kb_par.query(query)
+            results_seq = kb_seq.query(query, mode='keyword')
+            results_par = kb_par.query(query, mode='keyword')
 
             # Same number of results
             assert len(results_seq) == len(results_par), f"Query '{query}' returned different counts"
