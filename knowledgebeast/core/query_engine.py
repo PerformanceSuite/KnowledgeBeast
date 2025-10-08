@@ -229,11 +229,28 @@ class HybridQueryEngine:
         # Pre-compute document embeddings
         self._precompute_embeddings()
 
-    def _precompute_embeddings(self) -> None:
+    def refresh_embeddings(self) -> int:
+        """Refresh embeddings for all documents in repository.
+
+        This method can be called after documents are added to ensure
+        all documents have their embeddings cached. Useful for testing
+        and when documents are added after engine initialization.
+
+        Returns:
+            Number of documents embedded
+
+        Thread-safe through repository locking.
+        """
+        return self._precompute_embeddings()
+
+    def _precompute_embeddings(self) -> int:
         """Pre-compute embeddings for all documents in repository.
 
         This is called during initialization to populate the embedding cache.
         Thread-safe through repository locking.
+
+        Returns:
+            Number of documents embedded
         """
         logger.info("Pre-computing document embeddings...")
         stats = self.repository.get_stats()
@@ -241,7 +258,7 @@ class HybridQueryEngine:
 
         if doc_count == 0:
             logger.warning("No documents in repository to embed")
-            return
+            return 0
 
         # Get all document IDs (repository handles locking)
         with self.repository._lock:
@@ -258,6 +275,7 @@ class HybridQueryEngine:
                     logger.debug(f"Embedded {i + 1}/{doc_count} documents")
 
         logger.info(f"Completed embedding {doc_count} documents")
+        return doc_count
 
     def _get_embedding(self, text: str) -> np.ndarray:
         """Get embedding for text.
@@ -321,8 +339,15 @@ class HybridQueryEngine:
         # Compute similarities (lock-free)
         similarities = []
         for doc_id in doc_ids:
-            # Get cached embedding
+            # Get cached embedding, or compute on-the-fly if not cached
             doc_embedding = self.embedding_cache.get(doc_id)
+            if doc_embedding is None:
+                # Embedding not cached - compute and cache it
+                doc = self.repository.get_document(doc_id)
+                if doc and 'content' in doc:
+                    doc_embedding = self._get_embedding(doc['content'])
+                    self.embedding_cache.put(doc_id, doc_embedding)
+
             if doc_embedding is not None:
                 similarity = self._cosine_similarity(query_embedding, doc_embedding)
                 similarities.append((doc_id, similarity))
