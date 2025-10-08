@@ -591,3 +591,256 @@ class ErrorResponse(BaseModel):
     message: str = Field(..., description="Human-readable error message")
     detail: Optional[str] = Field(None, description="Detailed error information")
     status_code: int = Field(..., description="HTTP status code")
+
+
+# ============================================================================
+# Project API Models (v2)
+# ============================================================================
+
+class ProjectCreate(BaseModel):
+    """Request model for creating a new project."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "name": "Audio ML Project",
+                "description": "Audio processing and machine learning knowledge base",
+                "embedding_model": "all-MiniLM-L6-v2",
+                "metadata": {
+                    "owner": "user@example.com",
+                    "tags": ["audio", "ml"]
+                }
+            }
+        }
+    )
+
+    name: str = Field(
+        ...,
+        description="Project name (must be unique)",
+        min_length=1,
+        max_length=100,
+        pattern="^[a-zA-Z0-9_\\- ]+$"
+    )
+    description: str = Field(
+        default="",
+        description="Project description",
+        max_length=500
+    )
+    embedding_model: str = Field(
+        default="all-MiniLM-L6-v2",
+        description="Embedding model for this project"
+    )
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Additional project metadata"
+    )
+
+    @field_validator('name')
+    @classmethod
+    def sanitize_project_name(cls, v: str) -> str:
+        """Sanitize and validate project name."""
+        v = v.strip()
+        if not v:
+            raise ValueError("Project name cannot be empty or only whitespace")
+        return v
+
+
+class ProjectUpdate(BaseModel):
+    """Request model for updating a project."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "name": "Updated Project Name",
+                "description": "Updated description",
+                "embedding_model": "all-MiniLM-L6-v2",
+                "metadata": {"updated": True}
+            }
+        }
+    )
+
+    name: Optional[str] = Field(
+        None,
+        description="New project name",
+        min_length=1,
+        max_length=100,
+        pattern="^[a-zA-Z0-9_\\- ]+$"
+    )
+    description: Optional[str] = Field(
+        None,
+        description="New description",
+        max_length=500
+    )
+    embedding_model: Optional[str] = Field(
+        None,
+        description="New embedding model"
+    )
+    metadata: Optional[Dict[str, Any]] = Field(
+        None,
+        description="New metadata"
+    )
+
+
+class ProjectResponse(BaseModel):
+    """Response model for project data."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "project_id": "550e8400-e29b-41d4-a716-446655440000",
+                "name": "Audio ML Project",
+                "description": "Audio processing knowledge base",
+                "collection_name": "kb_project_550e8400-e29b-41d4-a716-446655440000",
+                "embedding_model": "all-MiniLM-L6-v2",
+                "created_at": "2025-10-07T12:00:00",
+                "updated_at": "2025-10-07T12:00:00",
+                "metadata": {"owner": "user@example.com"}
+            }
+        }
+    )
+
+    project_id: str = Field(..., description="Unique project identifier")
+    name: str = Field(..., description="Project name")
+    description: str = Field(..., description="Project description")
+    collection_name: str = Field(..., description="ChromaDB collection name")
+    embedding_model: str = Field(..., description="Embedding model")
+    created_at: str = Field(..., description="Creation timestamp")
+    updated_at: str = Field(..., description="Last update timestamp")
+    metadata: Dict[str, Any] = Field(..., description="Project metadata")
+
+
+class ProjectListResponse(BaseModel):
+    """Response model for listing projects."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "projects": [
+                    {
+                        "project_id": "550e8400-e29b-41d4-a716-446655440000",
+                        "name": "Audio ML Project",
+                        "description": "Audio processing",
+                        "collection_name": "kb_project_550e8400-e29b-41d4-a716-446655440000",
+                        "embedding_model": "all-MiniLM-L6-v2",
+                        "created_at": "2025-10-07T12:00:00",
+                        "updated_at": "2025-10-07T12:00:00",
+                        "metadata": {}
+                    }
+                ],
+                "count": 1
+            }
+        }
+    )
+
+    projects: List[ProjectResponse] = Field(..., description="List of projects")
+    count: int = Field(..., description="Number of projects")
+
+
+class ProjectQueryRequest(BaseModel):
+    """Request model for project-scoped query."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "query": "audio processing techniques",
+                "use_cache": True,
+                "limit": 10
+            }
+        }
+    )
+
+    query: str = Field(
+        ...,
+        description="Search query string",
+        min_length=1,
+        max_length=1000
+    )
+    use_cache: bool = Field(
+        default=True,
+        description="Whether to use cached results"
+    )
+    limit: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Maximum number of results (1-100)"
+    )
+
+    @field_validator('query')
+    @classmethod
+    def sanitize_query(cls, v: str) -> str:
+        """Sanitize query string."""
+        dangerous_chars = ['<', '>', ';', '&', '|', '$', '`', '\n', '\r']
+        for char in dangerous_chars:
+            if char in v:
+                raise ValueError(f"Query contains invalid character: {char}")
+        v = v.strip()
+        if not v:
+            raise ValueError("Query cannot be empty or only whitespace")
+        return v
+
+
+class ProjectIngestRequest(BaseModel):
+    """Request model for project-scoped document ingestion."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "file_path": "/path/to/document.md",
+                "content": "Document content here...",
+                "metadata": {"category": "audio"}
+            }
+        }
+    )
+
+    file_path: Optional[str] = Field(
+        None,
+        description="Path to document file (if ingesting from file)"
+    )
+    content: Optional[str] = Field(
+        None,
+        description="Document content (if ingesting directly)"
+    )
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Document metadata"
+    )
+
+    @field_validator('file_path')
+    @classmethod
+    def validate_file_path_optional(cls, v: Optional[str]) -> Optional[str]:
+        """Validate file path if provided."""
+        if v is None:
+            return None
+
+        try:
+            path = Path(v).resolve()
+        except Exception as e:
+            raise ValueError(f"Invalid file path: {e}")
+
+        if '..' in v:
+            raise ValueError("Path traversal detected: '..' not allowed")
+
+        allowed_extensions = {'.md', '.txt', '.pdf', '.docx', '.html', '.htm'}
+        if path.suffix.lower() not in allowed_extensions:
+            raise ValueError(f"Unsupported file type. Allowed: {', '.join(allowed_extensions)}")
+
+        return str(path)
+
+
+class ProjectDeleteResponse(BaseModel):
+    """Response model for project deletion."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "success": True,
+                "project_id": "550e8400-e29b-41d4-a716-446655440000",
+                "message": "Project deleted successfully"
+            }
+        }
+    )
+
+    success: bool = Field(..., description="Whether deletion succeeded")
+    project_id: str = Field(..., description="Deleted project ID")
+    message: str = Field(..., description="Status message")

@@ -200,6 +200,10 @@ def create_app() -> FastAPI:
             {
                 "name": "collections",
                 "description": "Collection management operations"
+            },
+            {
+                "name": "projects",
+                "description": "Multi-project management operations (API v2)"
             }
         ],
         swagger_ui_parameters={
@@ -232,7 +236,10 @@ def create_app() -> FastAPI:
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
     # Include routers with API versioning
+    # V1 routes (legacy)
     app.include_router(router, prefix="/api/v1")
+    # Also include router without prefix to support /api/v2 routes directly
+    app.include_router(router)
 
     # Mount static files for web UI
     static_dir = Path(__file__).parent.parent / "web" / "static"
@@ -363,6 +370,7 @@ async def root() -> dict:
         "redoc": "/redoc",
         "openapi": "/openapi.json",
         "api_v1": "/api/v1",
+        "api_v2": "/api/v2/projects",
         "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     }
 

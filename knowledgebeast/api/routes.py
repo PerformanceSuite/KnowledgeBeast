@@ -43,6 +43,13 @@ from knowledgebeast.api.models import (
     PaginatedQueryRequest,
     PaginatedQueryResponse,
     PaginationMetadata,
+    ProjectCreate,
+    ProjectDeleteResponse,
+    ProjectIngestRequest,
+    ProjectListResponse,
+    ProjectQueryRequest,
+    ProjectResponse,
+    ProjectUpdate,
     QueryRequest,
     QueryResponse,
     QueryResult,
@@ -53,6 +60,7 @@ from knowledgebeast.api.models import (
 from knowledgebeast.core.config import KnowledgeBeastConfig
 from knowledgebeast.core.engine import KnowledgeBase
 from knowledgebeast.core.heartbeat import KnowledgeBaseHeartbeat
+from knowledgebeast.core.project_manager import ProjectManager
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +76,7 @@ _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="kb-worker")
 # Global instances (singleton pattern)
 _kb_instance: Optional[KnowledgeBase] = None
 _heartbeat_instance: Optional[KnowledgeBaseHeartbeat] = None
+_project_manager_instance: Optional[ProjectManager] = None
 
 
 def get_kb_instance() -> KnowledgeBase:
@@ -104,6 +113,36 @@ def get_heartbeat_instance() -> Optional[KnowledgeBaseHeartbeat]:
         KnowledgeBaseHeartbeat instance or None
     """
     return _heartbeat_instance
+
+
+def get_project_manager() -> ProjectManager:
+    """Get or create the singleton ProjectManager instance.
+
+    Returns:
+        ProjectManager instance
+
+    Raises:
+        HTTPException: If initialization fails
+    """
+    global _project_manager_instance
+
+    if _project_manager_instance is None:
+        try:
+            logger.info("Initializing ProjectManager instance...")
+            _project_manager_instance = ProjectManager(
+                storage_path="./kb_projects.db",
+                chroma_path="./chroma_db",
+                cache_capacity=100
+            )
+            logger.info("ProjectManager initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize ProjectManager: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to initialize project manager: {str(e)}",
+            )
+
+    return _project_manager_instance
 
 
 def cleanup_heartbeat() -> None:
@@ -873,4 +912,398 @@ async def get_collection_info(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get collection info: {str(e)}",
+        )
+
+
+# ============================================================================
+# Project Endpoints (API v2)
+# ============================================================================
+
+
+@router.post(
+    "/api/v2/projects",
+    response_model=ProjectResponse,
+    tags=["projects"],
+    summary="Create new project",
+    description="Create a new isolated project with its own knowledge base",
+)
+@limiter.limit("10/minute")
+async def create_project(
+    request: Request,
+    project_data: ProjectCreate,
+    api_key: str = Depends(get_api_key)
+) -> ProjectResponse:
+    """Create a new project.
+
+    Args:
+        project_data: Project creation data
+
+    Returns:
+        Created project details
+
+    Raises:
+        HTTPException: If project creation fails or name already exists
+    """
+    try:
+        pm = get_project_manager()
+
+        # Create project in thread pool
+        loop = asyncio.get_event_loop()
+        project = await loop.run_in_executor(
+            _executor,
+            pm.create_project,
+            project_data.name,
+            project_data.description,
+            project_data.embedding_model,
+            project_data.metadata
+        )
+
+        return ProjectResponse(**project.to_dict())
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Create project error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create project: {str(e)}"
+        )
+
+
+@router.get(
+    "/api/v2/projects",
+    response_model=ProjectListResponse,
+    tags=["projects"],
+    summary="List all projects",
+    description="Get list of all projects",
+)
+@limiter.limit("60/minute")
+async def list_projects(
+    request: Request,
+    api_key: str = Depends(get_api_key)
+) -> ProjectListResponse:
+    """List all projects.
+
+    Returns:
+        List of all projects
+
+    Raises:
+        HTTPException: If listing fails
+    """
+    try:
+        pm = get_project_manager()
+
+        # List projects in thread pool
+        loop = asyncio.get_event_loop()
+        projects = await loop.run_in_executor(_executor, pm.list_projects)
+
+        project_responses = [ProjectResponse(**p.to_dict()) for p in projects]
+
+        return ProjectListResponse(
+            projects=project_responses,
+            count=len(project_responses)
+        )
+
+    except Exception as e:
+        logger.error(f"List projects error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list projects: {str(e)}"
+        )
+
+
+@router.get(
+    "/api/v2/projects/{project_id}",
+    response_model=ProjectResponse,
+    tags=["projects"],
+    summary="Get project details",
+    description="Get detailed information about a specific project",
+)
+@limiter.limit("60/minute")
+async def get_project(
+    request: Request,
+    project_id: str,
+    api_key: str = Depends(get_api_key)
+) -> ProjectResponse:
+    """Get project details.
+
+    Args:
+        project_id: Project identifier
+
+    Returns:
+        Project details
+
+    Raises:
+        HTTPException: If project not found
+    """
+    try:
+        pm = get_project_manager()
+
+        # Get project in thread pool
+        loop = asyncio.get_event_loop()
+        project = await loop.run_in_executor(_executor, pm.get_project, project_id)
+
+        if not project:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project not found: {project_id}"
+            )
+
+        return ProjectResponse(**project.to_dict())
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get project error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get project: {str(e)}"
+        )
+
+
+@router.put(
+    "/api/v2/projects/{project_id}",
+    response_model=ProjectResponse,
+    tags=["projects"],
+    summary="Update project",
+    description="Update project metadata",
+)
+@limiter.limit("20/minute")
+async def update_project(
+    request: Request,
+    project_id: str,
+    update_data: ProjectUpdate,
+    api_key: str = Depends(get_api_key)
+) -> ProjectResponse:
+    """Update project metadata.
+
+    Args:
+        project_id: Project identifier
+        update_data: Update data
+
+    Returns:
+        Updated project details
+
+    Raises:
+        HTTPException: If project not found or update fails
+    """
+    try:
+        pm = get_project_manager()
+
+        # Update project in thread pool
+        loop = asyncio.get_event_loop()
+        project = await loop.run_in_executor(
+            _executor,
+            pm.update_project,
+            project_id,
+            update_data.name,
+            update_data.description,
+            update_data.embedding_model,
+            update_data.metadata
+        )
+
+        if not project:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project not found: {project_id}"
+            )
+
+        return ProjectResponse(**project.to_dict())
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Update project error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update project: {str(e)}"
+        )
+
+
+@router.delete(
+    "/api/v2/projects/{project_id}",
+    response_model=ProjectDeleteResponse,
+    tags=["projects"],
+    summary="Delete project",
+    description="Delete a project and all its resources",
+)
+@limiter.limit("10/minute")
+async def delete_project(
+    request: Request,
+    project_id: str,
+    api_key: str = Depends(get_api_key)
+) -> ProjectDeleteResponse:
+    """Delete a project.
+
+    Args:
+        project_id: Project identifier
+
+    Returns:
+        Deletion status
+
+    Raises:
+        HTTPException: If project not found or deletion fails
+    """
+    try:
+        pm = get_project_manager()
+
+        # Delete project in thread pool
+        loop = asyncio.get_event_loop()
+        success = await loop.run_in_executor(_executor, pm.delete_project, project_id)
+
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project not found: {project_id}"
+            )
+
+        return ProjectDeleteResponse(
+            success=True,
+            project_id=project_id,
+            message=f"Project {project_id} deleted successfully"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Delete project error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete project: {str(e)}"
+        )
+
+
+@router.post(
+    "/api/v2/projects/{project_id}/query",
+    response_model=QueryResponse,
+    tags=["projects"],
+    summary="Project-scoped query",
+    description="Search within a specific project's knowledge base",
+)
+@limiter.limit("30/minute")
+async def project_query(
+    request: Request,
+    project_id: str,
+    query_request: ProjectQueryRequest,
+    api_key: str = Depends(get_api_key)
+) -> QueryResponse:
+    """Query a specific project's knowledge base.
+
+    Args:
+        project_id: Project identifier
+        query_request: Query request
+
+    Returns:
+        Query results
+
+    Raises:
+        HTTPException: If project not found or query fails
+    """
+    try:
+        pm = get_project_manager()
+
+        # Verify project exists
+        loop = asyncio.get_event_loop()
+        project = await loop.run_in_executor(_executor, pm.get_project, project_id)
+
+        if not project:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project not found: {project_id}"
+            )
+
+        # Get project cache
+        cache = pm.get_project_cache(project_id)
+
+        # For now, return empty results as placeholder
+        # TODO: Implement actual vector search with ChromaDB
+        return QueryResponse(
+            results=[],
+            count=0,
+            cached=False,
+            query=query_request.query
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Project query error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to query project: {str(e)}"
+        )
+
+
+@router.post(
+    "/api/v2/projects/{project_id}/ingest",
+    response_model=IngestResponse,
+    tags=["projects"],
+    summary="Project-scoped ingestion",
+    description="Ingest documents into a specific project",
+)
+@limiter.limit("20/minute")
+async def project_ingest(
+    request: Request,
+    project_id: str,
+    ingest_request: ProjectIngestRequest,
+    api_key: str = Depends(get_api_key)
+) -> IngestResponse:
+    """Ingest documents into a specific project.
+
+    Args:
+        project_id: Project identifier
+        ingest_request: Ingestion request
+
+    Returns:
+        Ingestion status
+
+    Raises:
+        HTTPException: If project not found or ingestion fails
+    """
+    try:
+        pm = get_project_manager()
+
+        # Verify project exists
+        loop = asyncio.get_event_loop()
+        project = await loop.run_in_executor(_executor, pm.get_project, project_id)
+
+        if not project:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project not found: {project_id}"
+            )
+
+        # Validate request has either file_path or content
+        if not ingest_request.file_path and not ingest_request.content:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Either file_path or content must be provided"
+            )
+
+        # For now, return success as placeholder
+        # TODO: Implement actual document ingestion with ChromaDB
+        doc_id = ingest_request.file_path or f"doc_{time.time()}"
+
+        return IngestResponse(
+            success=True,
+            file_path=ingest_request.file_path or "inline_content",
+            doc_id=doc_id,
+            message="Document ingestion placeholder - implementation pending"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Project ingest error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to ingest into project: {str(e)}"
         )
