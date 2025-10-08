@@ -317,3 +317,189 @@ class TestConfigEdgeCases:
         config.max_cache_size = 200
         assert config.max_cache_size == 200
         assert config.max_cache_size != original_size
+
+
+class TestVectorRAGConfigDefaults:
+    """Test vector RAG configuration defaults."""
+
+    def test_default_embedding_model(self):
+        """Test default embedding model is set correctly."""
+        config = KnowledgeBeastConfig()
+        assert config.embedding_model == "all-MiniLM-L6-v2"
+
+    def test_default_vector_search_mode(self):
+        """Test default vector search mode is hybrid."""
+        config = KnowledgeBeastConfig()
+        assert config.vector_search_mode == "hybrid"
+
+    def test_default_chunk_size(self):
+        """Test default chunk size is 1000."""
+        config = KnowledgeBeastConfig()
+        assert config.chunk_size == 1000
+
+    def test_default_chunk_overlap(self):
+        """Test default chunk overlap is 200."""
+        config = KnowledgeBeastConfig()
+        assert config.chunk_overlap == 200
+
+    def test_default_use_vector_search(self):
+        """Test vector search is enabled by default."""
+        config = KnowledgeBeastConfig()
+        assert config.use_vector_search is True
+
+    def test_default_chromadb_path(self):
+        """Test default ChromaDB path."""
+        config = KnowledgeBeastConfig()
+        assert config.chromadb_path == Path("./data/chromadb")
+
+
+class TestVectorRAGConfigCustom:
+    """Test vector RAG configuration with custom values."""
+
+    def test_custom_embedding_model(self):
+        """Test setting custom embedding model."""
+        config = KnowledgeBeastConfig(embedding_model="all-mpnet-base-v2")
+        assert config.embedding_model == "all-mpnet-base-v2"
+
+    def test_custom_vector_search_mode_vector(self):
+        """Test setting vector-only search mode."""
+        config = KnowledgeBeastConfig(vector_search_mode="vector")
+        assert config.vector_search_mode == "vector"
+
+    def test_custom_vector_search_mode_keyword(self):
+        """Test setting keyword-only search mode."""
+        config = KnowledgeBeastConfig(vector_search_mode="keyword")
+        assert config.vector_search_mode == "keyword"
+
+    def test_custom_chunk_size(self):
+        """Test setting custom chunk size."""
+        config = KnowledgeBeastConfig(chunk_size=500)
+        assert config.chunk_size == 500
+
+    def test_custom_chunk_overlap(self):
+        """Test setting custom chunk overlap."""
+        config = KnowledgeBeastConfig(chunk_overlap=100)
+        assert config.chunk_overlap == 100
+
+    def test_disable_vector_search(self):
+        """Test disabling vector search."""
+        config = KnowledgeBeastConfig(use_vector_search=False)
+        assert config.use_vector_search is False
+
+    def test_custom_chromadb_path(self):
+        """Test setting custom ChromaDB path."""
+        custom_path = Path("/custom/chromadb")
+        config = KnowledgeBeastConfig(chromadb_path=custom_path)
+        assert config.chromadb_path == custom_path
+
+
+class TestVectorRAGEnvVars:
+    """Test vector RAG environment variable configuration."""
+
+    def test_env_var_embedding_model(self, monkeypatch):
+        """Test KB_EMBEDDING_MODEL environment variable."""
+        monkeypatch.setenv('KB_EMBEDDING_MODEL', 'all-mpnet-base-v2')
+        config = KnowledgeBeastConfig()
+        assert config.embedding_model == 'all-mpnet-base-v2'
+
+    def test_env_var_vector_search_mode(self, monkeypatch):
+        """Test KB_VECTOR_SEARCH_MODE environment variable."""
+        monkeypatch.setenv('KB_VECTOR_SEARCH_MODE', 'vector')
+        config = KnowledgeBeastConfig()
+        assert config.vector_search_mode == 'vector'
+
+    def test_env_var_chunk_size(self, monkeypatch):
+        """Test KB_CHUNK_SIZE environment variable."""
+        monkeypatch.setenv('KB_CHUNK_SIZE', '750')
+        config = KnowledgeBeastConfig()
+        assert config.chunk_size == 750
+
+    def test_env_var_chunk_overlap(self, monkeypatch):
+        """Test KB_CHUNK_OVERLAP environment variable."""
+        monkeypatch.setenv('KB_CHUNK_OVERLAP', '150')
+        config = KnowledgeBeastConfig()
+        assert config.chunk_overlap == 150
+
+    def test_env_var_use_vector_search_true(self, monkeypatch):
+        """Test KB_USE_VECTOR_SEARCH environment variable (true)."""
+        for value in ['true', 'True', '1', 'yes']:
+            monkeypatch.setenv('KB_USE_VECTOR_SEARCH', value)
+            config = KnowledgeBeastConfig()
+            assert config.use_vector_search is True
+
+    def test_env_var_use_vector_search_false(self, monkeypatch):
+        """Test KB_USE_VECTOR_SEARCH environment variable (false)."""
+        for value in ['false', 'False', '0', 'no']:
+            monkeypatch.setenv('KB_USE_VECTOR_SEARCH', value)
+            config = KnowledgeBeastConfig()
+            assert config.use_vector_search is False
+
+    def test_env_var_chromadb_path(self, monkeypatch):
+        """Test KB_CHROMADB_PATH environment variable."""
+        monkeypatch.setenv('KB_CHROMADB_PATH', '/tmp/chromadb')
+        config = KnowledgeBeastConfig()
+        assert config.chromadb_path == Path('/tmp/chromadb')
+
+
+class TestVectorRAGValidation:
+    """Test vector RAG configuration validation."""
+
+    def test_invalid_vector_search_mode(self):
+        """Test invalid vector_search_mode raises ValueError."""
+        with pytest.raises(ValueError, match="vector_search_mode must be"):
+            KnowledgeBeastConfig(vector_search_mode="invalid")
+
+    def test_invalid_chunk_size_zero(self):
+        """Test chunk_size of zero raises ValueError."""
+        with pytest.raises(ValueError, match="chunk_size must be positive"):
+            KnowledgeBeastConfig(chunk_size=0)
+
+    def test_invalid_chunk_size_negative(self):
+        """Test negative chunk_size raises ValueError."""
+        with pytest.raises(ValueError, match="chunk_size must be positive"):
+            KnowledgeBeastConfig(chunk_size=-100)
+
+    def test_invalid_chunk_overlap_negative(self):
+        """Test negative chunk_overlap raises ValueError."""
+        with pytest.raises(ValueError, match="chunk_overlap must be non-negative"):
+            KnowledgeBeastConfig(chunk_overlap=-50)
+
+    def test_chunk_overlap_equal_to_chunk_size(self):
+        """Test chunk_overlap equal to chunk_size raises ValueError."""
+        with pytest.raises(ValueError, match="chunk_overlap must be less than chunk_size"):
+            KnowledgeBeastConfig(chunk_size=1000, chunk_overlap=1000)
+
+    def test_chunk_overlap_greater_than_chunk_size(self):
+        """Test chunk_overlap greater than chunk_size raises ValueError."""
+        with pytest.raises(ValueError, match="chunk_overlap must be less than chunk_size"):
+            KnowledgeBeastConfig(chunk_size=1000, chunk_overlap=1500)
+
+    def test_valid_chunk_overlap_boundary(self):
+        """Test chunk_overlap just below chunk_size is valid."""
+        config = KnowledgeBeastConfig(chunk_size=1000, chunk_overlap=999)
+        assert config.chunk_size == 1000
+        assert config.chunk_overlap == 999
+
+    def test_valid_all_search_modes(self):
+        """Test all valid search modes are accepted."""
+        for mode in ['vector', 'keyword', 'hybrid']:
+            config = KnowledgeBeastConfig(vector_search_mode=mode)
+            assert config.vector_search_mode == mode
+
+
+class TestVectorRAGPrintConfig:
+    """Test vector RAG configuration printing."""
+
+    def test_print_config_includes_vector_settings(self, capsys):
+        """Test print_config includes vector RAG settings."""
+        config = KnowledgeBeastConfig(verbose=True)
+        config.print_config()
+
+        captured = capsys.readouterr()
+        assert "Vector RAG Configuration" in captured.out
+        assert "Use Vector Search" in captured.out
+        assert "Embedding Model" in captured.out
+        assert "Search Mode" in captured.out
+        assert "Chunk Size" in captured.out
+        assert "Chunk Overlap" in captured.out
+        assert "ChromaDB Path" in captured.out

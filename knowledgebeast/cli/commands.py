@@ -554,6 +554,159 @@ def serve(ctx: click.Context, host: str, port: int, reload: bool) -> None:
 
 @cli.command()
 @click.option(
+    "--from",
+    "from_mode",
+    type=click.Choice(['term', 'vector']),
+    default='term',
+    help="Migration source mode (default: term)"
+)
+@click.option(
+    "--to",
+    "to_mode",
+    type=click.Choice(['term', 'vector']),
+    default='vector',
+    help="Migration target mode (default: vector)"
+)
+@click.option(
+    "--data-dir",
+    type=click.Path(path_type=Path),
+    default="./data",
+    help="Directory for data storage"
+)
+@click.option(
+    "--embedding-model",
+    type=str,
+    default="all-MiniLM-L6-v2",
+    help="Embedding model for vector mode (default: all-MiniLM-L6-v2)"
+)
+@click.option(
+    "--rollback",
+    is_flag=True,
+    help="Rollback to previous version from backup"
+)
+@click.option(
+    "--backup-path",
+    type=click.Path(path_type=Path),
+    help="Specific backup path for rollback"
+)
+@click.option(
+    "--skip-backup",
+    is_flag=True,
+    help="Skip backup creation (not recommended)"
+)
+@click.pass_context
+def migrate(
+    ctx: click.Context,
+    from_mode: str,
+    to_mode: str,
+    data_dir: Path,
+    embedding_model: str,
+    rollback: bool,
+    backup_path: Optional[Path],
+    skip_backup: bool
+) -> None:
+    """Migrate knowledge base between term-based and vector modes."""
+    try:
+        # Import migration tool
+        try:
+            sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+            from scripts.migrate_to_vector import VectorMigrationTool, MigrationError
+        except ImportError as e:
+            console.print(f"[red]❌ Error: Failed to import migration tool: {e}[/red]")
+            raise click.Abort()
+
+        # Validate migration path
+        if from_mode == to_mode:
+            console.print(f"[yellow]⚠ Warning: Source and target modes are the same ({from_mode})[/yellow]")
+            return
+
+        if from_mode != 'term' or to_mode != 'vector':
+            console.print(f"[yellow]⚠ Only term → vector migration is currently supported[/yellow]")
+            return
+
+        # Initialize migration tool
+        migration_tool = VectorMigrationTool(data_dir=data_dir)
+
+        if rollback:
+            # Execute rollback
+            console.print("[bold yellow]⚠ ROLLBACK MODE[/bold yellow]")
+            console.print()
+
+            if not Confirm.ask("[yellow]Are you sure you want to rollback to term-based index?[/yellow]"):
+                console.print("[dim]Rollback cancelled.[/dim]")
+                return
+
+            with console.status("[bold cyan]Rolling back...", spinner="dots"):
+                success = migration_tool.rollback(backup_path=backup_path)
+
+            if success:
+                panel = Panel(
+                    "[bold green]Rollback successful![/bold green]\n\n"
+                    "Term-based index has been restored from backup.",
+                    title="Rollback Complete",
+                    border_style="green",
+                    box=box.ROUNDED,
+                )
+                console.print(panel)
+        else:
+            # Execute migration
+            console.print("[bold cyan]🚀 KnowledgeBeast Migration Tool[/bold cyan]")
+            console.print(f"Migrating from [yellow]{from_mode}[/yellow] to [green]{to_mode}[/green]")
+            console.print(f"Data directory: {data_dir}")
+            console.print(f"Embedding model: {embedding_model}")
+            console.print()
+
+            if not skip_backup:
+                console.print("[dim]A backup will be created before migration.[/dim]")
+
+            if not Confirm.ask("[yellow]Proceed with migration?[/yellow]"):
+                console.print("[dim]Migration cancelled.[/dim]")
+                return
+
+            console.print()
+
+            result = migration_tool.migrate(
+                embedding_model=embedding_model,
+                skip_backup=skip_backup
+            )
+
+            if result["status"] == "success":
+                duration = result["duration_seconds"]
+                migrated = result["migration_result"]["migrated_count"]
+                errors = result["migration_result"]["error_count"]
+
+                panel = Panel(
+                    f"[bold green]Migration successful![/bold green]\n\n"
+                    f"[cyan]Documents migrated:[/cyan] {migrated}\n"
+                    f"[cyan]Errors:[/cyan] {errors}\n"
+                    f"[cyan]Duration:[/cyan] {duration:.2f}s\n"
+                    f"[cyan]Backup:[/cyan] {result['backup_path']}\n\n"
+                    f"[dim]Your knowledge base is now using vector embeddings!\n"
+                    f"Run 'knowledgebeast migrate --rollback' to restore term-based index.[/dim]",
+                    title="Migration Complete",
+                    border_style="green",
+                    box=box.ROUNDED,
+                )
+                console.print(panel)
+            elif result["status"] == "no_documents":
+                console.print("[yellow]⚠ No documents to migrate[/yellow]")
+
+    except MigrationError as e:
+        console.print(f"[bold red]❌ Migration error:[/bold red] {e}")
+        logger.error(f"Migration error: {e}", exc_info=True)
+        raise click.Abort()
+    except KeyboardInterrupt:
+        console.print("\n[yellow]⚠️  Migration cancelled by user[/yellow]")
+        logger.warning("Migration cancelled by KeyboardInterrupt")
+        raise click.Abort()
+    except Exception as e:
+        console.print(f"[red]❌ Error: {e}[/red]")
+        logger.error(f"Migrate command failed: {e}", exc_info=True)
+        raise click.Abort()
+
+
+@cli.command()
+@click.option(
     "--output",
     "-o",
     type=click.Path(path_type=Path),
