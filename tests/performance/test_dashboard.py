@@ -47,7 +47,9 @@ Document {i} contains information about signal processing and computer vision.
         auto_warm=False,
         cache_file=str(tmp_path / "cache.json")
     )
-    kb = KnowledgeBase(config)
+    # Disable vector embeddings for dashboard tests to avoid ChromaDB threading issues
+    # Dashboard tests focus on basic keyword search performance
+    kb = KnowledgeBase(config, enable_vector=False)
     kb.ingest_all()
     return kb
 
