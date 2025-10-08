@@ -88,7 +88,14 @@ class KnowledgeBaseHeartbeat:
         """Background heartbeat loop with error handling."""
         while self.running:
             try:
-                time.sleep(self.interval)
+                # Sleep in small increments to allow quick shutdown
+                # This avoids long wait times when stopping the heartbeat
+                elapsed = 0
+                sleep_increment = 0.1  # 100ms increments
+                while elapsed < self.interval and self.running:
+                    time.sleep(sleep_increment)
+                    elapsed += sleep_increment
+
                 if not self.running:  # Check again after sleep
                     break
 

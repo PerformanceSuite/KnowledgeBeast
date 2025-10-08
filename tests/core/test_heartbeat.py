@@ -58,7 +58,7 @@ class TestHeartbeatStartStop:
         heartbeat.stop()
         assert heartbeat.running is False
 
-    def test_start_already_running(self, kb_instance: KnowledgeBase, capsys):
+    def test_start_already_running(self, kb_instance: KnowledgeBase, caplog):
         """Test starting already running heartbeat."""
         heartbeat = KnowledgeBaseHeartbeat(kb_instance, interval=10)
         heartbeat.start()
@@ -66,8 +66,8 @@ class TestHeartbeatStartStop:
 
         # Try to start again
         heartbeat.start()
-        captured = capsys.readouterr()
-        assert "already running" in captured.out.lower()
+        # Check caplog for the warning message
+        assert any("already running" in record.message.lower() for record in caplog.records)
 
         # Cleanup
         heartbeat.stop()
