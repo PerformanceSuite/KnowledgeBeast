@@ -321,13 +321,11 @@ class HybridQueryEngine:
             top_k: Number of top results to return
 
         Returns:
-            List of (doc_id, document, score) tuples sorted by similarity
-
-        Raises:
-            ValueError: If query is empty
+            List of (doc_id, document, score) tuples sorted by similarity.
+            Returns empty list if query is empty.
         """
         if not query or not query.strip():
-            raise ValueError(ERR_EMPTY_SEARCH_TERMS)
+            return []
 
         # Get query embedding
         query_embedding = self._get_embedding(query)
@@ -421,13 +419,14 @@ class HybridQueryEngine:
             top_k: Number of top results to return
 
         Returns:
-            List of (doc_id, document, score) tuples sorted by combined score
+            List of (doc_id, document, score) tuples sorted by combined score.
+            Returns empty list if query is empty.
 
         Raises:
-            ValueError: If query is empty or alpha not in [0, 1]
+            ValueError: If alpha not in [0, 1]
         """
         if not query or not query.strip():
-            raise ValueError(ERR_EMPTY_SEARCH_TERMS)
+            return []
 
         alpha = alpha if alpha is not None else self.alpha
         if not 0 <= alpha <= 1:
@@ -488,13 +487,14 @@ class HybridQueryEngine:
             mode: Search mode ('vector', 'keyword', 'hybrid')
 
         Returns:
-            List of (doc_id, document, score) tuples with MMR re-ranking
+            List of (doc_id, document, score) tuples with MMR re-ranking.
+            Returns empty list if query is empty.
 
         Raises:
-            ValueError: If query is empty or lambda_param not in [0, 1]
+            ValueError: If lambda_param not in [0, 1]
         """
         if not query or not query.strip():
-            raise ValueError(ERR_EMPTY_SEARCH_TERMS)
+            return []
 
         if not 0 <= lambda_param <= 1:
             raise ValueError("lambda_param must be between 0 and 1")
@@ -577,13 +577,14 @@ class HybridQueryEngine:
             mode: Search mode ('vector', 'keyword', 'hybrid')
 
         Returns:
-            List of (doc_id, document, score) tuples with diversity filtering
+            List of (doc_id, document, score) tuples with diversity filtering.
+            Returns empty list if query is empty.
 
         Raises:
-            ValueError: If query is empty or threshold not in [0, 1]
+            ValueError: If threshold not in [0, 1]
         """
         if not query or not query.strip():
-            raise ValueError(ERR_EMPTY_SEARCH_TERMS)
+            return []
 
         if not 0 <= diversity_threshold <= 1:
             raise ValueError("diversity_threshold must be between 0 and 1")
