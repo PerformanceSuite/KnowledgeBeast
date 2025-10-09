@@ -75,7 +75,22 @@ router_v2 = APIRouter()  # V2 routes (projects)
 limiter = Limiter(key_func=get_remote_address)
 
 # Thread pool executor for blocking operations
-_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="kb-worker")
+_executor: Optional[ThreadPoolExecutor] = None
+
+
+def get_executor() -> ThreadPoolExecutor:
+    """Get or create the thread pool executor.
+
+    Returns:
+        ThreadPoolExecutor instance
+    """
+    global _executor
+
+    if _executor is None:
+        _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="kb-worker")
+        logger.debug("Created new thread pool executor")
+
+    return _executor
 
 # Global instances (singleton pattern)
 _kb_instance: Optional[KnowledgeBase] = None
@@ -166,6 +181,7 @@ def cleanup_executor() -> None:
     if _executor:
         logger.info("Shutting down thread pool executor...")
         _executor.shutdown(wait=True, cancel_futures=False)
+        _executor = None  # Reset to None after shutdown
         logger.info("Thread pool executor shutdown complete")
 
 
@@ -290,7 +306,7 @@ async def get_stats(request: Request, api_key: str = Depends(get_api_key)) -> St
 
         # Execute in thread pool (non-blocking)
         loop = asyncio.get_event_loop()
-        stats = await loop.run_in_executor(_executor, kb.get_stats)
+        stats = await loop.run_in_executor(get_executor(), kb.get_stats)
 
         return StatsResponse(**stats)
 
@@ -339,7 +355,7 @@ async def query_knowledge_base(
         # Execute query in thread pool (non-blocking)
         loop = asyncio.get_event_loop()
         results = await loop.run_in_executor(
-            _executor,
+            get_executor(),
             lambda: kb.query(query_request.query, use_cache=query_request.use_cache)
         )
 
@@ -403,7 +419,7 @@ async def query_knowledge_base_paginated(
         # Execute query in thread pool (non-blocking) - get ALL results
         loop = asyncio.get_event_loop()
         all_results = await loop.run_in_executor(
-            _executor,
+            get_executor(),
             kb.query,
             query_request.query,
             query_request.use_cache
@@ -523,7 +539,7 @@ async def ingest_document(
 
         # Trigger rebuild to include new file (execute in thread pool)
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(_executor, kb.rebuild_index)
+        await loop.run_in_executor(get_executor(), kb.rebuild_index)
 
         # Generate doc_id (similar to how engine does it)
         doc_id = str(file_path)
@@ -583,7 +599,7 @@ async def batch_ingest_documents(
         # Rebuild index to include all files (execute in thread pool)
         if successful > 0:
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(_executor, kb.rebuild_index)
+            await loop.run_in_executor(get_executor(), kb.rebuild_index)
 
         total_files = len(batch_request.file_paths)
         failed = len(failed_files)
@@ -641,10 +657,10 @@ async def warm_knowledge_base(
 
         # Rebuild if requested (execute in thread pool)
         if warm_request.force_rebuild:
-            await loop.run_in_executor(_executor, kb.rebuild_index)
+            await loop.run_in_executor(get_executor(), kb.rebuild_index)
 
         # Warm up (execute in thread pool)
-        await loop.run_in_executor(_executor, kb.warm_up)
+        await loop.run_in_executor(get_executor(), kb.warm_up)
 
         warm_time = time.time() - start_time
 
@@ -953,7 +969,7 @@ async def create_project(
         # Create project in thread pool
         loop = asyncio.get_event_loop()
         project = await loop.run_in_executor(
-            _executor,
+            get_executor(),
             pm.create_project,
             project_data.name,
             project_data.description,
@@ -1001,7 +1017,7 @@ async def list_projects(
 
         # List projects in thread pool
         loop = asyncio.get_event_loop()
-        projects = await loop.run_in_executor(_executor, pm.list_projects)
+        projects = await loop.run_in_executor(get_executor(), pm.list_projects)
 
         project_responses = [ProjectResponse(**p.to_dict()) for p in projects]
 
@@ -1047,7 +1063,7 @@ async def get_project(
 
         # Get project in thread pool
         loop = asyncio.get_event_loop()
-        project = await loop.run_in_executor(_executor, pm.get_project, project_id)
+        project = await loop.run_in_executor(get_executor(), pm.get_project, project_id)
 
         if not project:
             raise HTTPException(
@@ -1099,7 +1115,7 @@ async def update_project(
         # Update project in thread pool
         loop = asyncio.get_event_loop()
         project = await loop.run_in_executor(
-            _executor,
+            get_executor(),
             pm.update_project,
             project_id,
             update_data.name,
@@ -1160,7 +1176,7 @@ async def delete_project(
 
         # Delete project in thread pool
         loop = asyncio.get_event_loop()
-        success = await loop.run_in_executor(_executor, pm.delete_project, project_id)
+        success = await loop.run_in_executor(get_executor(), pm.delete_project, project_id)
 
         if not success:
             raise HTTPException(
@@ -1215,7 +1231,7 @@ async def project_query(
 
         # Verify project exists
         loop = asyncio.get_event_loop()
-        project = await loop.run_in_executor(_executor, pm.get_project, project_id)
+        project = await loop.run_in_executor(get_executor(), pm.get_project, project_id)
 
         if not project:
             raise HTTPException(
@@ -1238,7 +1254,7 @@ async def project_query(
             )
 
         # Get ChromaDB collection for this project
-        collection = await loop.run_in_executor(_executor, pm.get_project_collection, project_id)
+        collection = await loop.run_in_executor(get_executor(), pm.get_project_collection, project_id)
 
         if not collection:
             raise HTTPException(
@@ -1255,7 +1271,7 @@ async def project_query(
             )
             return result
 
-        chroma_results = await loop.run_in_executor(_executor, query_collection)
+        chroma_results = await loop.run_in_executor(get_executor(), query_collection)
 
         # Convert ChromaDB results to QueryResult format
         query_results = []
@@ -1330,7 +1346,7 @@ async def project_ingest(
 
         # Verify project exists
         loop = asyncio.get_event_loop()
-        project = await loop.run_in_executor(_executor, pm.get_project, project_id)
+        project = await loop.run_in_executor(get_executor(), pm.get_project, project_id)
 
         if not project:
             raise HTTPException(
@@ -1346,7 +1362,7 @@ async def project_ingest(
             )
 
         # Get ChromaDB collection for this project
-        collection = await loop.run_in_executor(_executor, pm.get_project_collection, project_id)
+        collection = await loop.run_in_executor(get_executor(), pm.get_project_collection, project_id)
 
         if not collection:
             raise HTTPException(
@@ -1399,7 +1415,7 @@ async def project_ingest(
                 metadatas=[doc_metadata]
             )
 
-        await loop.run_in_executor(_executor, add_to_collection)
+        await loop.run_in_executor(get_executor(), add_to_collection)
 
         logger.info(f"Ingested document into project {project_id}: {doc_id}")
 

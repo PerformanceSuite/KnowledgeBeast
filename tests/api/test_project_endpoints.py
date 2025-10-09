@@ -19,8 +19,6 @@ in v2.2.0. Skipping to focus on stable Phase 2 Advanced RAG features.
 
 import os
 import pytest
-
-pytest.skip("Experimental Project API v2 - not production ready for v2.2.0", allow_module_level=True)
 import tempfile
 from pathlib import Path
 from fastapi.testclient import TestClient
@@ -49,6 +47,9 @@ def client(test_db_path, test_chroma_path, monkeypatch):
     """Create test client with temporary database."""
     # Set test API key
     monkeypatch.setenv("KB_API_KEY", "test-api-key-12345")
+
+    # Disable rate limiting for tests
+    monkeypatch.setenv("KB_RATE_LIMIT_PER_MINUTE", "10000")
 
     # Override project manager paths via monkeypatch
     from knowledgebeast.api import routes
