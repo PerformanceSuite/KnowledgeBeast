@@ -21,7 +21,17 @@ from knowledgebeast.utils.observability import (
     embedding_cache_misses,
     query_duration,
     vector_search_duration,
+    chunking_duration,
+    chunks_created_total,
+    chunk_size_bytes,
+    chunk_overlap_ratio,
 )
+
+# Re-export for use in chunking module
+CHUNKING_DURATION = chunking_duration
+CHUNKS_CREATED_TOTAL = chunks_created_total
+CHUNK_SIZE_BYTES = chunk_size_bytes
+CHUNK_OVERLAP_RATIO = chunk_overlap_ratio
 
 logger = structlog.get_logger()
 
