@@ -64,6 +64,7 @@ from knowledgebeast.core.config import KnowledgeBeastConfig
 from knowledgebeast.core.engine import KnowledgeBase
 from knowledgebeast.core.heartbeat import KnowledgeBaseHeartbeat
 from knowledgebeast.core.project_manager import ProjectManager
+from knowledgebeast.monitoring.health import ProjectHealthMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,7 @@ def get_executor() -> ThreadPoolExecutor:
 _kb_instance: Optional[KnowledgeBase] = None
 _heartbeat_instance: Optional[KnowledgeBaseHeartbeat] = None
 _project_manager_instance: Optional[ProjectManager] = None
+_health_monitor_instance: Optional[ProjectHealthMonitor] = None
 
 
 def get_kb_instance() -> KnowledgeBase:
@@ -162,6 +164,33 @@ def get_project_manager() -> ProjectManager:
             )
 
     return _project_manager_instance
+
+
+def get_health_monitor() -> ProjectHealthMonitor:
+    """Get or create the singleton ProjectHealthMonitor instance.
+
+    Returns:
+        ProjectHealthMonitor instance
+
+    Raises:
+        HTTPException: If initialization fails
+    """
+    global _health_monitor_instance
+
+    if _health_monitor_instance is None:
+        try:
+            logger.info("Initializing ProjectHealthMonitor instance...")
+            pm = get_project_manager()
+            _health_monitor_instance = ProjectHealthMonitor(pm)
+            logger.info("ProjectHealthMonitor initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize ProjectHealthMonitor: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to initialize health monitor: {str(e)}",
+            )
+
+    return _health_monitor_instance
 
 
 def cleanup_heartbeat() -> None:
@@ -1226,8 +1255,14 @@ async def project_query(
     Raises:
         HTTPException: If project not found or query fails
     """
+    # Track query timing and success for health monitoring
+    start_time = time.time()
+    success = False
+    cache_hit = False
+
     try:
         pm = get_project_manager()
+        health_monitor = get_health_monitor()
 
         # Verify project exists
         loop = asyncio.get_event_loop()
@@ -1245,7 +1280,9 @@ async def project_query(
 
         cached_results = cache.get(cache_key) if query_request.use_cache else None
         if cached_results is not None:
+            cache_hit = True
             logger.debug(f"Cache hit for project {project_id} query: {query_request.query}")
+            success = True
             return QueryResponse(
                 results=cached_results,
                 count=len(cached_results),
@@ -1298,6 +1335,8 @@ async def project_query(
         if query_request.use_cache:
             cache.put(cache_key, query_results)
 
+        success = True
+
         return QueryResponse(
             results=query_results,
             count=len(query_results),
@@ -1313,6 +1352,14 @@ async def project_query(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to query project: {str(e)}"
         )
+    finally:
+        # Record health metrics
+        latency_ms = (time.time() - start_time) * 1000
+        try:
+            health_monitor = get_health_monitor()
+            health_monitor.record_query(project_id, latency_ms, success, cache_hit)
+        except Exception as e:
+            logger.warning(f"Failed to record health metrics: {e}")
 
 
 @router_v2.post(
@@ -1433,4 +1480,83 @@ async def project_ingest(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to ingest into project: {str(e)}"
+        )
+
+
+# ============================================================================
+# Project Health Monitoring Endpoints (API v2)
+# ============================================================================
+
+
+@router_v2.get(
+    "/{project_id}/health",
+    tags=["projects", "health"],
+    summary="Get project health status",
+    description="Get comprehensive health metrics and alerts for a specific project",
+)
+@limiter.limit("60/minute")
+async def get_project_health_endpoint(
+    request: Request,
+    project_id: str,
+    api_key: str = Depends(get_api_key)
+) -> Dict[str, Any]:
+    """Get health status for a specific project.
+
+    Returns:
+        Health status with metrics and alerts
+    """
+    try:
+        health_monitor = get_health_monitor()
+
+        # Get health status in thread pool
+        loop = asyncio.get_event_loop()
+        health = await loop.run_in_executor(
+            get_executor(),
+            health_monitor.get_project_health,
+            project_id
+        )
+
+        return health
+
+    except Exception as e:
+        logger.error(f"Project health error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get project health: {str(e)}"
+        )
+
+
+@router_v2.get(
+    "/health",
+    tags=["projects", "health"],
+    summary="Get all projects health status",
+    description="Get health status summary for all projects",
+)
+@limiter.limit("30/minute")
+async def get_all_projects_health_endpoint(
+    request: Request,
+    api_key: str = Depends(get_api_key)
+) -> Dict[str, Any]:
+    """Get health status for all projects.
+
+    Returns:
+        Summary and per-project health statuses
+    """
+    try:
+        health_monitor = get_health_monitor()
+
+        # Get all health statuses in thread pool
+        loop = asyncio.get_event_loop()
+        health = await loop.run_in_executor(
+            get_executor(),
+            health_monitor.get_all_projects_health
+        )
+
+        return health
+
+    except Exception as e:
+        logger.error(f"All projects health error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get all projects health: {str(e)}"
         )
