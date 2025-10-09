@@ -20,6 +20,10 @@ from knowledgebeast.utils.observability import (
     embedding_cache_hits,
     embedding_cache_misses,
     query_duration,
+    reranking_duration,
+    reranking_model_loads_total,
+    reranking_requests_total,
+    reranking_score_improvement,
     vector_search_duration,
 )
 
@@ -203,3 +207,79 @@ def measure_vector_search(search_type: str) -> Generator[None, None, None]:
     finally:
         duration = time.time() - start_time
         record_vector_search(search_type, duration)
+
+
+def record_reranking_metrics(
+    reranker_type: str,
+    status: str,
+    duration: float
+) -> None:
+    """Record re-ranking metrics.
+
+    Args:
+        reranker_type: Type of reranker ("cross_encoder", "mmr")
+        status: Operation status ("success" or "error")
+        duration: Operation duration in seconds
+    """
+    reranking_requests_total.labels(reranker_type=reranker_type, status=status).inc()
+    reranking_duration.labels(reranker_type=reranker_type, status=status).observe(duration)
+    logger.debug(
+        "reranking_metrics_recorded",
+        reranker_type=reranker_type,
+        status=status,
+        duration_seconds=duration
+    )
+
+
+def record_model_load(model_name: str) -> None:
+    """Record a model load event.
+
+    Args:
+        model_name: Name of the model that was loaded
+    """
+    reranking_model_loads_total.labels(model_name=model_name).inc()
+    logger.debug("model_load_recorded", model_name=model_name)
+
+
+def record_score_improvement(
+    reranker_type: str,
+    vector_score: float,
+    rerank_score: float
+) -> None:
+    """Record score improvement from re-ranking.
+
+    Args:
+        reranker_type: Type of reranker ("cross_encoder", "mmr")
+        vector_score: Original vector similarity score
+        rerank_score: Re-ranking score
+    """
+    improvement = rerank_score - vector_score
+    reranking_score_improvement.labels(reranker_type=reranker_type).observe(improvement)
+    logger.debug(
+        "score_improvement_recorded",
+        reranker_type=reranker_type,
+        improvement=improvement
+    )
+
+
+@contextmanager
+def measure_reranking(reranker_type: str) -> Generator[None, None, None]:
+    """Context manager to measure and record re-ranking operations.
+
+    Args:
+        reranker_type: Type of reranker ("cross_encoder", "mmr")
+
+    Example:
+        with measure_reranking("cross_encoder"):
+            reranked_results = reranker.rerank(query, results)
+    """
+    start_time = time.time()
+    status = "success"
+    try:
+        yield
+    except Exception:
+        status = "error"
+        raise
+    finally:
+        duration = time.time() - start_time
+        record_reranking_metrics(reranker_type, status, duration)

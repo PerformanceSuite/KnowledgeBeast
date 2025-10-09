@@ -5,7 +5,7 @@
 set -e
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WORKTREE_BASE="${REPO_ROOT}/../knowledgebeast-phase1"
+WORKTREE_BASE="${REPO_ROOT}/.worktrees/phase1"
 
 echo "🚀 Phase 1: Production Excellence - Launching Agents"
 echo "=================================================="

@@ -110,6 +110,37 @@ cache_operation_duration = Histogram(
     buckets=(0.0001, 0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1)
 )
 
+# Re-ranking metrics
+reranking_duration = Histogram(
+    "kb_reranking_duration_seconds",
+    "Duration of re-ranking operations in seconds",
+    ["reranker_type", "status"],
+    registry=metrics_registry,
+    buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0)
+)
+
+reranking_requests_total = Counter(
+    "kb_reranking_requests_total",
+    "Total number of re-ranking requests",
+    ["reranker_type", "status"],
+    registry=metrics_registry
+)
+
+reranking_model_loads_total = Counter(
+    "kb_reranking_model_loads_total",
+    "Total number of re-ranking model loads",
+    ["model_name"],
+    registry=metrics_registry
+)
+
+reranking_score_improvement = Histogram(
+    "kb_reranking_score_improvement",
+    "Score improvement delta between vector and rerank scores",
+    ["reranker_type"],
+    registry=metrics_registry,
+    buckets=(-0.5, -0.25, -0.1, 0.0, 0.1, 0.25, 0.5, 0.75, 1.0)
+)
+
 
 def setup_opentelemetry(
     service_name: str = SERVICE_NAME,

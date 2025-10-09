@@ -148,6 +148,7 @@ data/
 .knowledge_cache.pkl
 chroma_db/
 knowledge-base/
+.worktrees/
 
 # OS
 .DS_Store

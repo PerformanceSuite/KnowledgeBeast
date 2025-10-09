@@ -345,11 +345,11 @@
 ### Parallel Execution Strategy
 
 ```bash
-# Create 4 git worktrees
-git worktree add ../kb-observability feature/observability-stack
-git worktree add ../kb-reliability feature/reliability-engineering
-git worktree add ../kb-dashboards feature/grafana-dashboards
-git worktree add ../kb-docs feature/production-docs
+# Create 4 git worktrees (inside project, not external)
+git worktree add .worktrees/phase1/observability feature/observability-stack
+git worktree add .worktrees/phase1/reliability feature/reliability-engineering
+git worktree add .worktrees/phase1/dashboards feature/grafana-dashboards
+git worktree add .worktrees/phase1/docs feature/production-docs
 
 # Launch 4 agents in parallel
 # Agent 1: Observability (8 hours)
@@ -413,7 +413,7 @@ cd .claude
 ./launch_phase1_agents.sh
 
 # Monitor agent progress
-tail -f ../kb-*/agent.log
+tail -f .worktrees/phase1/*/agent.log
 
 # Verify all PRs created
 gh pr list --label "phase-1"

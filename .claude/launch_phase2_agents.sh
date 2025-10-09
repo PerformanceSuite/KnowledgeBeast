@@ -9,7 +9,7 @@ echo "================================================"
 
 # Get repo root
 REPO_ROOT=$(git rev-parse --show-toplevel)
-WORKTREE_BASE="${REPO_ROOT}/../knowledgebeast-phase2"
+WORKTREE_BASE="${REPO_ROOT}/.worktrees/phase2"
 
 # Ensure we're on main branch
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
