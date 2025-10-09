@@ -1,0 +1,113 @@
+---
+# Persistent Volume Claim for KnowledgeBeast API Data
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: knowledgebeast-data-pvc
+  namespace: knowledgebeast
+  labels:
+    app: knowledgebeast
+    component: api
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: fast-ssd  # Use SSD storage class
+  resources:
+    requests:
+      storage: 50Gi
+
+---
+# Persistent Volume Claim for ChromaDB Data
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: chromadb-data-pvc
+  namespace: knowledgebeast
+  labels:
+    app: knowledgebeast
+    component: chromadb
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: fast-ssd
+  resources:
+    requests:
+      storage: 100Gi
+
+---
+# Persistent Volume Claim for Redis Data
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data-pvc
+  namespace: knowledgebeast
+  labels:
+    app: knowledgebeast
+    component: redis
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: fast-ssd
+  resources:
+    requests:
+      storage: 20Gi
+
+---
+# StorageClass Definition (Example for AWS EBS)
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: fast-ssd
+  labels:
+    app: knowledgebeast
+provisioner: ebs.csi.aws.com  # Use AWS EBS CSI driver
+parameters:
+  type: gp3  # General Purpose SSD v3
+  iops: "3000"
+  throughput: "125"
+  encrypted: "true"
+  kmsKeyId: "arn:aws:kms:us-west-2:123456789012:key/12345678-1234-1234-1234-123456789012"
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Retain
+
+---
+# StorageClass for GCP (Alternative)
+# apiVersion: storage.k8s.io/v1
+# kind: StorageClass
+# metadata:
+#   name: fast-ssd
+# provisioner: pd.csi.storage.gke.io
+# parameters:
+#   type: pd-ssd
+#   replication-type: regional-pd
+# volumeBindingMode: WaitForFirstConsumer
+# allowVolumeExpansion: true
+
+---
+# StorageClass for Azure (Alternative)
+# apiVersion: storage.k8s.io/v1
+# kind: StorageClass
+# metadata:
+#   name: fast-ssd
+# provisioner: disk.csi.azure.com
+# parameters:
+#   storageaccounttype: Premium_LRS
+#   kind: Managed
+# volumeBindingMode: WaitForFirstConsumer
+# allowVolumeExpansion: true
+
+---
+# VolumeSnapshot Class (for backups)
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: knowledgebeast-snapshot-class
+  labels:
+    app: knowledgebeast
+driver: ebs.csi.aws.com  # Use appropriate driver for your platform
+deletionPolicy: Retain
+parameters:
+  # Snapshot tags
+  tagSpecification_1: "Name=knowledgebeast-snapshot"
+  tagSpecification_2: "Environment=production"

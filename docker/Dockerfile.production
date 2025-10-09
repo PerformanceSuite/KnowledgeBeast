@@ -1,0 +1,162 @@
+# KnowledgeBeast Production Dockerfile
+# Multi-stage build for optimized, secure production deployment
+# Target image size: < 500MB
+# Security: Non-root user, minimal attack surface, vulnerability scanning
+
+# =============================================================================
+# Stage 1: Builder - Build dependencies and install packages
+# =============================================================================
+FROM python:3.11-slim-bookworm AS builder
+
+# Build metadata
+LABEL maintainer="KnowledgeBeast Team"
+LABEL stage="builder"
+LABEL description="Build stage for KnowledgeBeast dependencies"
+
+# Set build-time environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_DEFAULT_TIMEOUT=100
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
+    make \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create application directory
+WORKDIR /app
+
+# Copy requirements files
+COPY requirements.txt requirements-dev.txt ./
+
+# Install Python dependencies to user site-packages
+# This allows us to copy only the installed packages to the runtime stage
+RUN pip install --user --no-cache-dir -r requirements.txt
+
+# Install production-specific dependencies
+RUN pip install --user --no-cache-dir \
+    gunicorn==21.2.0 \
+    uvicorn[standard]==0.27.0 \
+    prometheus-client==0.19.0 \
+    python-json-logger==2.0.7
+
+# =============================================================================
+# Stage 2: Runtime - Minimal production image
+# =============================================================================
+FROM python:3.11-slim-bookworm AS runtime
+
+# Runtime metadata
+LABEL maintainer="KnowledgeBeast Team"
+LABEL version="2.3.0"
+LABEL description="KnowledgeBeast Production Image"
+LABEL org.opencontainers.image.source="https://github.com/yourusername/knowledgebeast"
+LABEL org.opencontainers.image.documentation="https://github.com/yourusername/knowledgebeast/docs"
+LABEL org.opencontainers.image.licenses="MIT"
+
+# Set production environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
+    APP_ENV=production \
+    LOG_LEVEL=INFO \
+    WORKERS=4 \
+    MAX_REQUESTS=1000 \
+    MAX_REQUESTS_JITTER=50 \
+    TIMEOUT=60 \
+    GRACEFUL_TIMEOUT=30 \
+    KEEP_ALIVE=5
+
+# Install runtime dependencies only
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Create non-root user for security
+RUN groupadd -r appuser --gid=1000 && \
+    useradd -r -g appuser --uid=1000 --home-dir=/app --shell=/bin/bash appuser && \
+    mkdir -p /app /data /logs && \
+    chown -R appuser:appuser /app /data /logs
+
+# Copy Python dependencies from builder
+COPY --from=builder --chown=appuser:appuser /root/.local /home/appuser/.local
+
+# Set PATH to include user-installed packages
+ENV PATH=/home/appuser/.local/bin:$PATH
+
+# Set working directory
+WORKDIR /app
+
+# Copy application code
+COPY --chown=appuser:appuser . .
+
+# Create necessary directories with proper permissions
+RUN mkdir -p \
+    /app/data/chroma \
+    /app/data/embeddings \
+    /app/logs \
+    /app/cache \
+    && chown -R appuser:appuser /app
+
+# Switch to non-root user
+USER appuser
+
+# Expose application port
+EXPOSE 8000
+
+# Health check configuration
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Production startup script
+COPY --chown=appuser:appuser docker/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+ENTRYPOINT ["/app/entrypoint.sh"]
+
+# Default command: Run with Gunicorn + Uvicorn workers
+CMD ["gunicorn", \
+     "knowledgebeast.api.app:app", \
+     "--bind", "0.0.0.0:8000", \
+     "--workers", "$WORKERS", \
+     "--worker-class", "uvicorn.workers.UvicornWorker", \
+     "--max-requests", "$MAX_REQUESTS", \
+     "--max-requests-jitter", "$MAX_REQUESTS_JITTER", \
+     "--timeout", "$TIMEOUT", \
+     "--graceful-timeout", "$GRACEFUL_TIMEOUT", \
+     "--keep-alive", "$KEEP_ALIVE", \
+     "--log-level", "$LOG_LEVEL", \
+     "--access-logfile", "/logs/access.log", \
+     "--error-logfile", "/logs/error.log", \
+     "--log-config", "/app/config/logging.conf"]
+
+# =============================================================================
+# Stage 3: Debug - Development/debugging image (optional)
+# =============================================================================
+FROM runtime AS debug
+
+USER root
+
+# Install debugging tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    vim \
+    htop \
+    strace \
+    net-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install development dependencies
+COPY requirements-dev.txt /tmp/
+RUN pip install --no-cache-dir -r /tmp/requirements-dev.txt
+
+USER appuser
+
+# Override CMD for debug mode
+CMD ["uvicorn", "knowledgebeast.api.app:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--log-level", "debug"]
