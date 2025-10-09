@@ -110,6 +110,7 @@ cache_operation_duration = Histogram(
     buckets=(0.0001, 0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1)
 )
 
+<<<<<<< HEAD
 # Re-ranking metrics
 reranking_duration = Histogram(
     "kb_reranking_duration_seconds",
@@ -171,6 +172,40 @@ chunk_overlap_ratio = Histogram(
     ["strategy"],
     registry=metrics_registry,
     buckets=(0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
+)
+
+# Query expansion metrics (Phase 2)
+query_expansions_total = Counter(
+    "kb_query_expansions_total",
+    "Total number of query expansions performed",
+    registry=metrics_registry
+)
+
+query_expansion_duration = Histogram(
+    "kb_query_expansion_duration_seconds",
+    "Query expansion duration in seconds",
+    registry=metrics_registry,
+    buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5)
+)
+
+# Semantic cache metrics (Phase 2)
+semantic_cache_hits_total = Counter(
+    "kb_semantic_cache_hits_total",
+    "Total number of semantic cache hits",
+    registry=metrics_registry
+)
+
+semantic_cache_misses_total = Counter(
+    "kb_semantic_cache_misses_total",
+    "Total number of semantic cache misses",
+    registry=metrics_registry
+)
+
+semantic_cache_similarity_scores = Histogram(
+    "kb_semantic_cache_similarity_scores",
+    "Histogram of semantic cache similarity scores",
+    registry=metrics_registry,
+    buckets=(0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.92, 0.94, 0.95, 0.96, 0.97, 0.98, 0.99, 1.0)
 )
 
 

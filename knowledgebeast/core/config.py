@@ -79,11 +79,17 @@ class KnowledgeBeastConfig:
     use_vector_search: bool = True
     chromadb_path: Path = field(default_factory=lambda: Path("./data/chromadb"))
 
-    # Advanced chunking settings (Phase 2)
-    chunking_strategy: str = "auto"  # semantic, recursive, markdown, code, auto
-    semantic_similarity_threshold: float = 0.7
-    respect_markdown_structure: bool = True
-    preserve_code_blocks: bool = True
+    # Query expansion settings (Phase 2)
+    query_expansion_enabled: bool = True
+    query_expansion_synonyms: bool = True
+    query_expansion_acronyms: bool = True
+    query_expansion_max_expansions: int = 3
+
+    # Semantic cache settings (Phase 2)
+    semantic_cache_enabled: bool = True
+    semantic_cache_similarity_threshold: float = 0.95
+    semantic_cache_ttl_seconds: int = 3600  # 1 hour
+    semantic_cache_max_entries: int = 10000
 
     def __post_init__(self) -> None:
         """Validate and load from environment variables."""
@@ -125,18 +131,31 @@ class KnowledgeBeastConfig:
         if env_chromadb_path := os.getenv('KB_CHROMADB_PATH'):
             self.chromadb_path = Path(env_chromadb_path)
 
-        # Advanced chunking environment variables
-        if env_chunking_strategy := os.getenv('KB_CHUNKING_STRATEGY'):
-            self.chunking_strategy = env_chunking_strategy
+        # Query expansion environment variables
+        if env_expansion_enabled := os.getenv('KB_QUERY_EXPANSION_ENABLED'):
+            self.query_expansion_enabled = env_expansion_enabled.lower() in ('true', '1', 'yes')
 
-        if env_semantic_threshold := os.getenv('KB_SEMANTIC_SIMILARITY_THRESHOLD'):
-            self.semantic_similarity_threshold = float(env_semantic_threshold)
+        if env_expansion_synonyms := os.getenv('KB_QUERY_EXPANSION_SYNONYMS'):
+            self.query_expansion_synonyms = env_expansion_synonyms.lower() in ('true', '1', 'yes')
 
-        if env_respect_md := os.getenv('KB_RESPECT_MARKDOWN_STRUCTURE'):
-            self.respect_markdown_structure = env_respect_md.lower() in ('true', '1', 'yes')
+        if env_expansion_acronyms := os.getenv('KB_QUERY_EXPANSION_ACRONYMS'):
+            self.query_expansion_acronyms = env_expansion_acronyms.lower() in ('true', '1', 'yes')
 
-        if env_preserve_code := os.getenv('KB_PRESERVE_CODE_BLOCKS'):
-            self.preserve_code_blocks = env_preserve_code.lower() in ('true', '1', 'yes')
+        if env_expansion_max := os.getenv('KB_QUERY_EXPANSION_MAX_EXPANSIONS'):
+            self.query_expansion_max_expansions = int(env_expansion_max)
+
+        # Semantic cache environment variables
+        if env_cache_enabled := os.getenv('KB_SEMANTIC_CACHE_ENABLED'):
+            self.semantic_cache_enabled = env_cache_enabled.lower() in ('true', '1', 'yes')
+
+        if env_cache_threshold := os.getenv('KB_SEMANTIC_CACHE_SIMILARITY_THRESHOLD'):
+            self.semantic_cache_similarity_threshold = float(env_cache_threshold)
+
+        if env_cache_ttl := os.getenv('KB_SEMANTIC_CACHE_TTL_SECONDS'):
+            self.semantic_cache_ttl_seconds = int(env_cache_ttl)
+
+        if env_cache_max := os.getenv('KB_SEMANTIC_CACHE_MAX_ENTRIES'):
+            self.semantic_cache_max_entries = int(env_cache_max)
 
         # Auto-detect CPU count if not set
         if self.max_workers is None:
@@ -168,13 +187,19 @@ class KnowledgeBeastConfig:
         if self.chunk_overlap >= self.chunk_size:
             raise ValueError("chunk_overlap must be less than chunk_size")
 
-        # Validate chunking settings
-        valid_strategies = ('semantic', 'recursive', 'markdown', 'code', 'auto')
-        if self.chunking_strategy not in valid_strategies:
-            raise ValueError(f"chunking_strategy must be one of {valid_strategies}")
+        # Validate query expansion settings
+        if self.query_expansion_max_expansions < 0:
+            raise ValueError("query_expansion_max_expansions must be non-negative")
 
-        if not 0.0 <= self.semantic_similarity_threshold <= 1.0:
-            raise ValueError("semantic_similarity_threshold must be between 0.0 and 1.0")
+        # Validate semantic cache settings
+        if not 0 <= self.semantic_cache_similarity_threshold <= 1:
+            raise ValueError("semantic_cache_similarity_threshold must be between 0 and 1")
+
+        if self.semantic_cache_ttl_seconds <= 0:
+            raise ValueError("semantic_cache_ttl_seconds must be positive")
+
+        if self.semantic_cache_max_entries <= 0:
+            raise ValueError("semantic_cache_max_entries must be positive")
 
     def get_all_knowledge_paths(self) -> List[Path]:
         """Get all knowledge directory paths.
@@ -215,12 +240,6 @@ class KnowledgeBeastConfig:
         print(f"   Chunk Size: {self.chunk_size}")
         print(f"   Chunk Overlap: {self.chunk_overlap}")
         print(f"   ChromaDB Path: {self.chromadb_path}")
-        print()
-        print("📄 Advanced Chunking Configuration:")
-        print(f"   Chunking Strategy: {self.chunking_strategy}")
-        print(f"   Semantic Similarity Threshold: {self.semantic_similarity_threshold}")
-        print(f"   Respect Markdown Structure: {self.respect_markdown_structure}")
-        print(f"   Preserve Code Blocks: {self.preserve_code_blocks}")
         print()
 
 

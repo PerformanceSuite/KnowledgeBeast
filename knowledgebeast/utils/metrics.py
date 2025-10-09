@@ -20,22 +20,13 @@ from knowledgebeast.utils.observability import (
     embedding_cache_hits,
     embedding_cache_misses,
     query_duration,
-    reranking_duration,
-    reranking_model_loads_total,
-    reranking_requests_total,
-    reranking_score_improvement,
+    query_expansion_duration,
+    query_expansions_total,
+    semantic_cache_hits_total,
+    semantic_cache_misses_total,
+    semantic_cache_similarity_scores,
     vector_search_duration,
-    chunking_duration,
-    chunks_created_total,
-    chunk_size_bytes,
-    chunk_overlap_ratio,
 )
-
-# Re-export for use in chunking module
-CHUNKING_DURATION = chunking_duration
-CHUNKS_CREATED_TOTAL = chunks_created_total
-CHUNK_SIZE_BYTES = chunk_size_bytes
-CHUNK_OVERLAP_RATIO = chunk_overlap_ratio
 
 logger = structlog.get_logger()
 
@@ -219,77 +210,53 @@ def measure_vector_search(search_type: str) -> Generator[None, None, None]:
         record_vector_search(search_type, duration)
 
 
-def record_reranking_metrics(
-    reranker_type: str,
-    status: str,
-    duration: float
-) -> None:
-    """Record re-ranking metrics.
+# Query expansion metrics (Phase 2)
+def record_query_expansion(duration: float) -> None:
+    """Record query expansion metrics.
 
     Args:
-        reranker_type: Type of reranker ("cross_encoder", "mmr")
-        status: Operation status ("success" or "error")
-        duration: Operation duration in seconds
+        duration: Expansion duration in seconds
     """
-    reranking_requests_total.labels(reranker_type=reranker_type, status=status).inc()
-    reranking_duration.labels(reranker_type=reranker_type, status=status).observe(duration)
+    query_expansions_total.inc()
+    query_expansion_duration.observe(duration)
     logger.debug(
-        "reranking_metrics_recorded",
-        reranker_type=reranker_type,
-        status=status,
+        "query_expansion_metrics_recorded",
         duration_seconds=duration
     )
 
 
-def record_model_load(model_name: str) -> None:
-    """Record a model load event.
+@contextmanager
+def measure_query_expansion() -> Generator[None, None, None]:
+    """Context manager to measure and record query expansion operations.
+
+    Example:
+        with measure_query_expansion():
+            result = expander.expand(query)
+    """
+    start_time = time.time()
+    try:
+        yield
+    finally:
+        duration = time.time() - start_time
+        record_query_expansion(duration)
+
+
+# Semantic cache metrics (Phase 2)
+def record_semantic_cache_hit(similarity: float) -> None:
+    """Record semantic cache hit with similarity score.
 
     Args:
-        model_name: Name of the model that was loaded
+        similarity: Similarity score (0-1)
     """
-    reranking_model_loads_total.labels(model_name=model_name).inc()
-    logger.debug("model_load_recorded", model_name=model_name)
-
-
-def record_score_improvement(
-    reranker_type: str,
-    vector_score: float,
-    rerank_score: float
-) -> None:
-    """Record score improvement from re-ranking.
-
-    Args:
-        reranker_type: Type of reranker ("cross_encoder", "mmr")
-        vector_score: Original vector similarity score
-        rerank_score: Re-ranking score
-    """
-    improvement = rerank_score - vector_score
-    reranking_score_improvement.labels(reranker_type=reranker_type).observe(improvement)
+    semantic_cache_hits_total.inc()
+    semantic_cache_similarity_scores.observe(similarity)
     logger.debug(
-        "score_improvement_recorded",
-        reranker_type=reranker_type,
-        improvement=improvement
+        "semantic_cache_hit_recorded",
+        similarity=similarity
     )
 
 
-@contextmanager
-def measure_reranking(reranker_type: str) -> Generator[None, None, None]:
-    """Context manager to measure and record re-ranking operations.
-
-    Args:
-        reranker_type: Type of reranker ("cross_encoder", "mmr")
-
-    Example:
-        with measure_reranking("cross_encoder"):
-            reranked_results = reranker.rerank(query, results)
-    """
-    start_time = time.time()
-    status = "success"
-    try:
-        yield
-    except Exception:
-        status = "error"
-        raise
-    finally:
-        duration = time.time() - start_time
-        record_reranking_metrics(reranker_type, status, duration)
+def record_semantic_cache_miss() -> None:
+    """Record semantic cache miss."""
+    semantic_cache_misses_total.inc()
+    logger.debug("semantic_cache_miss_recorded")

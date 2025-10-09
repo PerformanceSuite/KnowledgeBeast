@@ -30,3 +30,11 @@ pillow>=10.0.0  # Image processing and manipulation
 transformers>=4.30.0  # CLIP and BLIP models
 torch>=2.0.0  # PyTorch for ML models
 torchvision>=0.15.0  # Vision models and transforms
+
+# Query expansion dependencies
+nltk>=3.8.0  # WordNet for synonym expansion
+numpy>=1.24.0  # Embedding similarity calculations
+
+# Optional dependencies (install with pip install knowledgebeast[ner])
+# spacy>=3.5.0  # Named Entity Recognition
+# en-core-web-sm  # spaCy English model (python -m spacy download en_core_web_sm)
