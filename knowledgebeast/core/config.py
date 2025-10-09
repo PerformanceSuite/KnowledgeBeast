@@ -79,6 +79,12 @@ class KnowledgeBeastConfig:
     use_vector_search: bool = True
     chromadb_path: Path = field(default_factory=lambda: Path("./data/chromadb"))
 
+    # Advanced chunking settings (Phase 2)
+    chunking_strategy: str = "auto"  # semantic, recursive, markdown, code, auto
+    semantic_similarity_threshold: float = 0.7
+    respect_markdown_structure: bool = True
+    preserve_code_blocks: bool = True
+
     def __post_init__(self) -> None:
         """Validate and load from environment variables."""
         # Load from environment variables if set
@@ -119,6 +125,19 @@ class KnowledgeBeastConfig:
         if env_chromadb_path := os.getenv('KB_CHROMADB_PATH'):
             self.chromadb_path = Path(env_chromadb_path)
 
+        # Advanced chunking environment variables
+        if env_chunking_strategy := os.getenv('KB_CHUNKING_STRATEGY'):
+            self.chunking_strategy = env_chunking_strategy
+
+        if env_semantic_threshold := os.getenv('KB_SEMANTIC_SIMILARITY_THRESHOLD'):
+            self.semantic_similarity_threshold = float(env_semantic_threshold)
+
+        if env_respect_md := os.getenv('KB_RESPECT_MARKDOWN_STRUCTURE'):
+            self.respect_markdown_structure = env_respect_md.lower() in ('true', '1', 'yes')
+
+        if env_preserve_code := os.getenv('KB_PRESERVE_CODE_BLOCKS'):
+            self.preserve_code_blocks = env_preserve_code.lower() in ('true', '1', 'yes')
+
         # Auto-detect CPU count if not set
         if self.max_workers is None:
             self.max_workers = multiprocessing.cpu_count()
@@ -148,6 +167,14 @@ class KnowledgeBeastConfig:
 
         if self.chunk_overlap >= self.chunk_size:
             raise ValueError("chunk_overlap must be less than chunk_size")
+
+        # Validate chunking settings
+        valid_strategies = ('semantic', 'recursive', 'markdown', 'code', 'auto')
+        if self.chunking_strategy not in valid_strategies:
+            raise ValueError(f"chunking_strategy must be one of {valid_strategies}")
+
+        if not 0.0 <= self.semantic_similarity_threshold <= 1.0:
+            raise ValueError("semantic_similarity_threshold must be between 0.0 and 1.0")
 
     def get_all_knowledge_paths(self) -> List[Path]:
         """Get all knowledge directory paths.
@@ -188,6 +215,12 @@ class KnowledgeBeastConfig:
         print(f"   Chunk Size: {self.chunk_size}")
         print(f"   Chunk Overlap: {self.chunk_overlap}")
         print(f"   ChromaDB Path: {self.chromadb_path}")
+        print()
+        print("📄 Advanced Chunking Configuration:")
+        print(f"   Chunking Strategy: {self.chunking_strategy}")
+        print(f"   Semantic Similarity Threshold: {self.semantic_similarity_threshold}")
+        print(f"   Respect Markdown Structure: {self.respect_markdown_structure}")
+        print(f"   Preserve Code Blocks: {self.preserve_code_blocks}")
         print()
 
 

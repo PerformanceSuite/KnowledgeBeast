@@ -141,6 +141,38 @@ reranking_score_improvement = Histogram(
     buckets=(-0.5, -0.25, -0.1, 0.0, 0.1, 0.25, 0.5, 0.75, 1.0)
 )
 
+# Chunking metrics
+chunking_duration = Histogram(
+    "kb_chunking_duration_seconds",
+    "Duration of chunking operations in seconds",
+    ["strategy"],
+    registry=metrics_registry,
+    buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0)
+)
+
+chunks_created_total = Counter(
+    "kb_chunks_created_total",
+    "Total number of chunks created",
+    ["strategy"],
+    registry=metrics_registry
+)
+
+chunk_size_bytes = Histogram(
+    "kb_chunk_size_bytes",
+    "Size of chunks in bytes",
+    ["strategy"],
+    registry=metrics_registry,
+    buckets=(100, 250, 500, 1000, 2000, 5000, 10000, 20000, 50000)
+)
+
+chunk_overlap_ratio = Histogram(
+    "kb_chunk_overlap_ratio",
+    "Ratio of chunk overlap to chunk size",
+    ["strategy"],
+    registry=metrics_registry,
+    buckets=(0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
+)
+
 
 def setup_opentelemetry(
     service_name: str = SERVICE_NAME,
