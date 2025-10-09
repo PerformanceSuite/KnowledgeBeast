@@ -30,6 +30,11 @@ from slowapi.util import get_remote_address
 from knowledgebeast import __version__
 from knowledgebeast.api.auth import get_api_key
 from knowledgebeast.api.models import (
+    APIKeyCreate,
+    APIKeyInfo,
+    APIKeyListResponse,
+    APIKeyResponse,
+    APIKeyRevokeResponse,
     BatchIngestRequest,
     BatchIngestResponse,
     CacheClearResponse,
@@ -1433,4 +1438,237 @@ async def project_ingest(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to ingest into project: {str(e)}"
+        )
+
+
+# ============================================================================
+# Project API Key Management Endpoints (v2 Security)
+# ============================================================================
+
+
+@router_v2.post(
+    "/{project_id}/api-keys",
+    response_model=APIKeyResponse,
+    tags=["projects", "security"],
+    summary="Create project API key",
+    description="Generate a new API key for project-scoped access",
+    status_code=201
+)
+@limiter.limit("10/minute")
+async def create_project_api_key(
+    request: Request,
+    project_id: str,
+    key_data: APIKeyCreate,
+    api_key: str = Depends(get_api_key)
+) -> APIKeyResponse:
+    """Create a new API key for a project.
+
+    Args:
+        project_id: Project identifier
+        key_data: API key creation parameters
+
+    Returns:
+        Created API key (raw key shown ONLY here!)
+
+    Raises:
+        HTTPException: If project not found or key creation fails
+
+    Note:
+        The raw API key is returned only once in the response.
+        Store it securely - it cannot be retrieved again.
+    """
+    try:
+        pm = get_project_manager()
+
+        # Verify project exists
+        loop = asyncio.get_event_loop()
+        project = await loop.run_in_executor(get_executor(), pm.get_project, project_id)
+
+        if not project:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project not found: {project_id}"
+            )
+
+        # Create API key
+        from knowledgebeast.api.project_auth_middleware import get_auth_manager
+        auth_manager = get_auth_manager()
+
+        key_info = await loop.run_in_executor(
+            get_executor(),
+            auth_manager.create_api_key,
+            project_id,
+            key_data.name,
+            key_data.scopes,
+            key_data.expires_days,
+            None  # created_by (could extract from global API key if needed)
+        )
+
+        logger.info(
+            f"Created API key for project {project_id}: "
+            f"{key_info['name']} (scopes: {key_info['scopes']})"
+        )
+
+        return APIKeyResponse(**key_info)
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Create API key error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create API key: {str(e)}"
+        )
+
+
+@router_v2.get(
+    "/{project_id}/api-keys",
+    response_model=APIKeyListResponse,
+    tags=["projects", "security"],
+    summary="List project API keys",
+    description="Get all API keys for a project (no raw keys included)"
+)
+@limiter.limit("60/minute")
+async def list_project_api_keys(
+    request: Request,
+    project_id: str,
+    api_key: str = Depends(get_api_key)
+) -> APIKeyListResponse:
+    """List all API keys for a project.
+
+    Args:
+        project_id: Project identifier
+
+    Returns:
+        List of API key metadata (no raw keys)
+
+    Raises:
+        HTTPException: If project not found
+
+    Note:
+        Raw API keys are never included in this response.
+        Only metadata like name, scopes, and usage timestamps.
+    """
+    try:
+        pm = get_project_manager()
+
+        # Verify project exists
+        loop = asyncio.get_event_loop()
+        project = await loop.run_in_executor(get_executor(), pm.get_project, project_id)
+
+        if not project:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project not found: {project_id}"
+            )
+
+        # List API keys
+        from knowledgebeast.api.project_auth_middleware import get_auth_manager
+        auth_manager = get_auth_manager()
+
+        keys = await loop.run_in_executor(
+            get_executor(),
+            auth_manager.list_project_keys,
+            project_id
+        )
+
+        # Convert to APIKeyInfo models
+        from knowledgebeast.api.models import APIKeyInfo
+        api_keys = [APIKeyInfo(**key_data) for key_data in keys]
+
+        return APIKeyListResponse(
+            project_id=project_id,
+            api_keys=api_keys,
+            count=len(api_keys)
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"List API keys error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list API keys: {str(e)}"
+        )
+
+
+@router_v2.delete(
+    "/{project_id}/api-keys/{key_id}",
+    response_model=APIKeyRevokeResponse,
+    tags=["projects", "security"],
+    summary="Revoke project API key",
+    description="Revoke an API key to immediately disable access"
+)
+@limiter.limit("20/minute")
+async def revoke_project_api_key(
+    request: Request,
+    project_id: str,
+    key_id: str,
+    api_key: str = Depends(get_api_key)
+) -> APIKeyRevokeResponse:
+    """Revoke a project API key.
+
+    Args:
+        project_id: Project identifier
+        key_id: API key ID to revoke
+
+    Returns:
+        Revocation status
+
+    Raises:
+        HTTPException: If project or key not found
+
+    Note:
+        Revoked keys are soft-deleted (audit trail preserved).
+        The key will be immediately invalid for all requests.
+    """
+    try:
+        pm = get_project_manager()
+
+        # Verify project exists
+        loop = asyncio.get_event_loop()
+        project = await loop.run_in_executor(get_executor(), pm.get_project, project_id)
+
+        if not project:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project not found: {project_id}"
+            )
+
+        # Revoke API key
+        from knowledgebeast.api.project_auth_middleware import get_auth_manager
+        auth_manager = get_auth_manager()
+
+        success = await loop.run_in_executor(
+            get_executor(),
+            auth_manager.revoke_api_key,
+            key_id
+        )
+
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"API key not found: {key_id}"
+            )
+
+        logger.info(f"Revoked API key {key_id} for project {project_id}")
+
+        return APIKeyRevokeResponse(
+            success=True,
+            key_id=key_id,
+            message=f"API key {key_id} revoked successfully"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Revoke API key error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to revoke API key: {str(e)}"
         )
