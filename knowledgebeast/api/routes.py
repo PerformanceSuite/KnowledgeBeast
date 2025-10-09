@@ -69,6 +69,13 @@ from knowledgebeast.core.config import KnowledgeBeastConfig
 from knowledgebeast.core.engine import KnowledgeBase
 from knowledgebeast.core.heartbeat import KnowledgeBaseHeartbeat
 from knowledgebeast.core.project_manager import ProjectManager
+from knowledgebeast.utils.metrics import (
+    measure_project_query,
+    record_project_cache_hit,
+    record_project_cache_miss,
+    record_project_error,
+    record_project_ingest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -982,15 +989,23 @@ async def create_project(
             project_data.metadata
         )
 
+        # Record project creation metric
+        from knowledgebeast.utils.observability import project_creations_total
+        project_creations_total.inc()
+
         return ProjectResponse(**project.to_dict())
 
     except ValueError as e:
+        from knowledgebeast.utils.observability import project_errors_total
+        project_errors_total.labels(project_id="unknown", error_type="ValidationError").inc()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
     except Exception as e:
         logger.error(f"Create project error: {e}", exc_info=True)
+        from knowledgebeast.utils.observability import project_errors_total
+        project_errors_total.labels(project_id="unknown", error_type="CreateError").inc()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create project: {str(e)}"
@@ -1135,6 +1150,10 @@ async def update_project(
                 detail=f"Project not found: {project_id}"
             )
 
+        # Record project update
+        from knowledgebeast.utils.observability import project_updates_total
+        project_updates_total.inc()
+
         return ProjectResponse(**project.to_dict())
 
     except HTTPException:
@@ -1188,6 +1207,10 @@ async def delete_project(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Project not found: {project_id}"
             )
+
+        # Record project deletion
+        from knowledgebeast.utils.observability import project_deletions_total
+        project_deletions_total.inc()
 
         return ProjectDeleteResponse(
             success=True,
@@ -1251,6 +1274,7 @@ async def project_query(
         cached_results = cache.get(cache_key) if query_request.use_cache else None
         if cached_results is not None:
             logger.debug(f"Cache hit for project {project_id} query: {query_request.query}")
+            record_project_cache_hit(project_id)
             return QueryResponse(
                 results=cached_results,
                 count=len(cached_results),
@@ -1258,10 +1282,14 @@ async def project_query(
                 query=query_request.query
             )
 
+        # Record cache miss
+        record_project_cache_miss(project_id)
+
         # Get ChromaDB collection for this project
         collection = await loop.run_in_executor(get_executor(), pm.get_project_collection, project_id)
 
         if not collection:
+            record_project_error(project_id, "CollectionError")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to get collection for project: {project_id}"
@@ -1276,7 +1304,9 @@ async def project_query(
             )
             return result
 
-        chroma_results = await loop.run_in_executor(get_executor(), query_collection)
+        # Measure query duration
+        with measure_project_query(project_id):
+            chroma_results = await loop.run_in_executor(get_executor(), query_collection)
 
         # Convert ChromaDB results to QueryResult format
         query_results = []
@@ -1314,6 +1344,7 @@ async def project_query(
         raise
     except Exception as e:
         logger.error(f"Project query error: {e}", exc_info=True)
+        record_project_error(project_id, "QueryError")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to query project: {str(e)}"
@@ -1422,6 +1453,8 @@ async def project_ingest(
 
         await loop.run_in_executor(get_executor(), add_to_collection)
 
+        # Record successful ingestion
+        record_project_ingest(project_id, "success")
         logger.info(f"Ingested document into project {project_id}: {doc_id}")
 
         return IngestResponse(
@@ -1435,6 +1468,8 @@ async def project_ingest(
         raise
     except Exception as e:
         logger.error(f"Project ingest error: {e}", exc_info=True)
+        record_project_ingest(project_id, "error")
+        record_project_error(project_id, "IngestError")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to ingest into project: {str(e)}"

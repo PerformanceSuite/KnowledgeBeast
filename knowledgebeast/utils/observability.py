@@ -275,6 +275,25 @@ project_api_keys_active = Gauge(
     registry=metrics_registry
 )
 
+# Project management metrics
+project_creations_total = Counter(
+    "kb_project_creations_total",
+    "Total number of projects created",
+    registry=metrics_registry
+)
+
+project_deletions_total = Counter(
+    "kb_project_deletions_total",
+    "Total number of projects deleted",
+    registry=metrics_registry
+)
+
+project_updates_total = Counter(
+    "kb_project_updates_total",
+    "Total number of project updates",
+    registry=metrics_registry
+)
+
 
 def setup_opentelemetry(
     service_name: str = SERVICE_NAME,
