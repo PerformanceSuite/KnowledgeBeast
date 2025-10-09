@@ -552,6 +552,72 @@ def serve(ctx: click.Context, host: str, port: int, reload: bool) -> None:
         raise click.Abort()
 
 
+@cli.command(name='mcp-server')
+@click.option(
+    "--projects-db",
+    type=click.Path(),
+    default="./kb_projects.db",
+    help="Path to projects database"
+)
+@click.option(
+    "--chroma-path",
+    type=click.Path(),
+    default="./chroma_db",
+    help="Path to ChromaDB storage"
+)
+@click.option(
+    "--log-level",
+    type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR']),
+    default='INFO',
+    help="Logging level"
+)
+@click.pass_context
+def mcp_server(
+    ctx: click.Context,
+    projects_db: str,
+    chroma_path: str,
+    log_level: str
+) -> None:
+    """Start the MCP server with stdio transport.
+
+    The MCP server provides a Model Context Protocol interface for
+    KnowledgeBeast, allowing MCP clients like Claude Code to interact
+    with knowledge base projects through standardized tools.
+
+    The server runs on stdio transport and communicates via JSON-RPC.
+    """
+    try:
+        import asyncio
+        from knowledgebeast.mcp.config import MCPConfig
+        from knowledgebeast.mcp.server import serve
+
+        # Create configuration
+        config = MCPConfig(
+            projects_db_path=projects_db,
+            chroma_path=chroma_path,
+            log_level=log_level,
+        )
+
+        # Run MCP server
+        console.print(f"[cyan]Starting KnowledgeBeast MCP server...[/cyan]", file=sys.stderr)
+        console.print(f"[dim]Projects DB: {projects_db}[/dim]", file=sys.stderr)
+        console.print(f"[dim]Chroma Path: {chroma_path}[/dim]", file=sys.stderr)
+        console.print(f"[dim]Log Level: {log_level}[/dim]", file=sys.stderr)
+        console.print(f"[dim]Communicating via stdio...[/dim]", file=sys.stderr)
+
+        # Run async server
+        asyncio.run(serve(config))
+
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Server stopped by user[/yellow]", file=sys.stderr)
+        logger.warning("MCP server stopped by KeyboardInterrupt")
+        sys.exit(0)
+    except Exception as e:
+        console.print(f"[red]MCP server error: {e}[/red]", file=sys.stderr)
+        logger.error(f"MCP server command failed: {e}", exc_info=True)
+        raise click.Abort()
+
+
 @cli.command()
 @click.option(
     "--from",
