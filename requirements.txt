@@ -10,6 +10,7 @@ pydantic>=2.0.0
 uvicorn[standard]>=0.27.0
 tenacity>=8.2.0  # Retry logic for robust I/O operations
 circuitbreaker>=1.4.0  # Circuit breaker pattern for fault tolerance
+mcp>=1.0.0  # Model Context Protocol SDK for MCP server
 
 # API dependencies
 slowapi>=0.1.9  # Rate limiting for FastAPI
