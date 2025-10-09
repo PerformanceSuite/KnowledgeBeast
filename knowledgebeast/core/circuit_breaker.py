@@ -264,7 +264,10 @@ class CircuitBreaker:
         """Manually reset circuit breaker to CLOSED state."""
         with self._lock:
             logger.info(f"Circuit breaker '{self.name}' manually reset")
-            self._transition_to_closed()
+            self._state = CircuitState.CLOSED
+            self.failure_count = 0
+            self.failure_times.clear()
+            self.last_state_change = time.time()
 
     def __repr__(self) -> str:
         """String representation of circuit breaker."""
