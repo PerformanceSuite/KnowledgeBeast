@@ -1,1 +1,1 @@
-"""Tests for KnowledgeBeast MCP server."""
+"""Tests for MCP tools."""

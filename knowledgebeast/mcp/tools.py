@@ -2,6 +2,7 @@
 
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -10,7 +11,9 @@ from ..core.project_manager import ProjectManager
 from ..core.query_engine import HybridQueryEngine
 from ..core.repository import DocumentRepository
 from ..core.vector_store import VectorStore
+from ..monitoring.health import ProjectHealthMonitor
 from .config import MCPConfig
+from .validation import InputValidator, ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +36,12 @@ class KnowledgeBeastTools:
             chroma_path=config.chroma_path,
             cache_capacity=config.cache_capacity,
         )
+
+        # Initialize health monitor
+        self.health_monitor = ProjectHealthMonitor(self.project_manager)
+
+        # Initialize input validator
+        self.validator = InputValidator()
 
         logger.info(
             f"KnowledgeBeast MCP tools initialized "
@@ -424,3 +433,360 @@ class KnowledgeBeastTools:
         except Exception as e:
             logger.error(f"Delete project error: {e}", exc_info=True)
             return {"error": str(e)}
+
+    # ===== Advanced Tools =====
+
+    async def kb_export_project(
+        self, project_id: str, output_path: str
+    ) -> Dict[str, Any]:
+        """Export project to ZIP archive with embeddings.
+
+        Args:
+            project_id: Project identifier
+            output_path: Path to output ZIP file
+
+        Returns:
+            Export result with file path and status
+        """
+        try:
+            # Validate inputs
+            try:
+                project_id = self.validator.validate_project_id(project_id)
+                output_path_obj = self.validator.validate_output_path(
+                    output_path, "output_path", allow_overwrite=False
+                )
+            except ValidationError as e:
+                logger.warning(f"Export validation error: {e.message}")
+                return e.to_dict()
+
+            # Verify project exists
+            project = self.project_manager.get_project(project_id)
+            if not project:
+                return {
+                    "error": f"Project not found: {project_id}",
+                    "error_type": "ProjectNotFound",
+                }
+
+            # Export project
+            export_path = self.project_manager.export_project(
+                project_id, str(output_path_obj)
+            )
+
+            logger.info(f"Project exported: {project_id} -> {export_path}")
+
+            return {
+                "success": True,
+                "project_id": project_id,
+                "project_name": project.name,
+                "output_path": str(Path(export_path).absolute()),
+                "message": "Project exported successfully",
+            }
+
+        except ValueError as e:
+            logger.error(f"Export validation error: {e}", exc_info=True)
+            return {"error": str(e), "error_type": "ValidationError"}
+        except IOError as e:
+            logger.error(f"Export I/O error: {e}", exc_info=True)
+            return {"error": str(e), "error_type": "ExportError"}
+        except Exception as e:
+            logger.error(f"Export error: {e}", exc_info=True)
+            return {
+                "error": str(e),
+                "error_type": "ExportError",
+                "project_id": project_id,
+            }
+
+    async def kb_import_project(
+        self,
+        zip_path: str,
+        new_project_name: Optional[str] = None,
+        conflict_resolution: str = "skip",
+    ) -> Dict[str, Any]:
+        """Import project from ZIP archive.
+
+        Args:
+            zip_path: Path to ZIP export file
+            new_project_name: Optional new name for imported project
+            conflict_resolution: How to handle conflicts (skip, overwrite)
+
+        Returns:
+            Import result with project_id and status
+        """
+        try:
+            # Validate inputs
+            try:
+                zip_path_obj = self.validator.validate_file_path(
+                    zip_path, "zip_path", must_exist=True, allowed_extensions=[".zip"]
+                )
+                if new_project_name:
+                    new_project_name = self.validator.validate_string(
+                        new_project_name,
+                        "new_project_name",
+                        required=False,
+                        min_length=1,
+                        max_length=255,
+                    )
+                conflict_resolution = self.validator.validate_choice(
+                    conflict_resolution,
+                    "conflict_resolution",
+                    choices=["skip", "overwrite"],
+                )
+            except ValidationError as e:
+                logger.warning(f"Import validation error: {e.message}")
+                return e.to_dict()
+
+            # Import project
+            overwrite = conflict_resolution == "overwrite"
+            project_id = self.project_manager.import_project(
+                str(zip_path_obj), new_project_name=new_project_name, overwrite=overwrite
+            )
+
+            # Get imported project details
+            project = self.project_manager.get_project(project_id)
+
+            logger.info(
+                f"Project imported: {project_id} from {zip_path} "
+                f"(name: {project.name if project else 'unknown'})"
+            )
+
+            return {
+                "success": True,
+                "project_id": project_id,
+                "project_name": project.name if project else None,
+                "zip_path": str(zip_path_obj.absolute()),
+                "message": "Project imported successfully",
+            }
+
+        except ValueError as e:
+            logger.error(f"Import validation error: {e}", exc_info=True)
+            return {"error": str(e), "error_type": "ValidationError"}
+        except IOError as e:
+            logger.error(f"Import I/O error: {e}", exc_info=True)
+            return {"error": str(e), "error_type": "ImportError"}
+        except Exception as e:
+            logger.error(f"Import error: {e}", exc_info=True)
+            return {"error": str(e), "error_type": "ImportError"}
+
+    async def kb_project_health(self, project_id: str) -> Dict[str, Any]:
+        """Get project health status with metrics and alerts.
+
+        Args:
+            project_id: Project identifier
+
+        Returns:
+            Health status with metrics, alerts, and recommendations
+        """
+        try:
+            # Validate inputs
+            try:
+                project_id = self.validator.validate_project_id(project_id)
+            except ValidationError as e:
+                logger.warning(f"Health check validation error: {e.message}")
+                return e.to_dict()
+
+            # Get health status from monitor
+            health_status = self.health_monitor.get_project_health(project_id)
+
+            logger.info(
+                f"Health check completed: project={project_id}, "
+                f"status={health_status.get('status', 'unknown')}"
+            )
+
+            return health_status
+
+        except Exception as e:
+            logger.error(f"Health check error: {e}", exc_info=True)
+            return {
+                "error": str(e),
+                "error_type": "HealthCheckError",
+                "project_id": project_id,
+                "status": "error",
+            }
+
+    async def kb_batch_ingest(
+        self, project_id: str, file_paths: List[str]
+    ) -> Dict[str, Any]:
+        """Ingest multiple files in batch.
+
+        Args:
+            project_id: Project identifier
+            file_paths: List of file paths to ingest
+
+        Returns:
+            Batch ingestion result with success/failure counts and doc_ids
+        """
+        try:
+            # Validate inputs
+            try:
+                project_id = self.validator.validate_project_id(project_id)
+                file_paths = self.validator.validate_list(
+                    file_paths,
+                    "file_paths",
+                    required=True,
+                    min_length=1,
+                    max_length=1000,
+                    item_type=str,
+                )
+            except ValidationError as e:
+                logger.warning(f"Batch ingest validation error: {e.message}")
+                return e.to_dict()
+
+            # Verify project exists
+            project = self.project_manager.get_project(project_id)
+            if not project:
+                return {
+                    "error": f"Project not found: {project_id}",
+                    "error_type": "ProjectNotFound",
+                }
+
+            # Get project components
+            vector_store = VectorStore(
+                persist_directory=self.config.chroma_path,
+                collection_name=project.collection_name,
+            )
+
+            embedding_engine = EmbeddingEngine(
+                model_name=project.embedding_model,
+                cache_size=self.config.cache_capacity,
+            )
+
+            # Process files in batch
+            success_count = 0
+            failed_count = 0
+            doc_ids = []
+            errors = []
+
+            logger.info(f"Starting batch ingest: {len(file_paths)} files")
+
+            for file_path in file_paths:
+                try:
+                    # Validate file path
+                    file_path_obj = Path(file_path)
+                    if not file_path_obj.exists():
+                        failed_count += 1
+                        errors.append(
+                            {"file": file_path, "error": "File not found"}
+                        )
+                        continue
+
+                    # Read and ingest file
+                    file_content = file_path_obj.read_text()
+                    doc_id = f"doc_{int(time.time() * 1000000)}"
+                    embedding = embedding_engine.embed(file_content)
+
+                    doc_metadata = {
+                        "source": "batch_ingest",
+                        "file_path": str(file_path),
+                        "file_name": file_path_obj.name,
+                        "project_id": project_id,
+                    }
+
+                    vector_store.add(
+                        ids=doc_id,
+                        embeddings=embedding,
+                        documents=file_content,
+                        metadatas=doc_metadata,
+                    )
+
+                    success_count += 1
+                    doc_ids.append(doc_id)
+
+                except Exception as e:
+                    failed_count += 1
+                    errors.append({"file": file_path, "error": str(e)})
+                    logger.warning(f"Failed to ingest {file_path}: {e}")
+
+            logger.info(
+                f"Batch ingest completed: success={success_count}, "
+                f"failed={failed_count}"
+            )
+
+            return {
+                "success": True,
+                "project_id": project_id,
+                "project_name": project.name,
+                "total_files": len(file_paths),
+                "success_count": success_count,
+                "failed_count": failed_count,
+                "doc_ids": doc_ids,
+                "errors": errors if errors else None,
+                "message": f"Batch ingestion completed: {success_count}/{len(file_paths)} files succeeded",
+            }
+
+        except Exception as e:
+            logger.error(f"Batch ingest error: {e}", exc_info=True)
+            return {
+                "error": str(e),
+                "error_type": "BatchIngestError",
+                "project_id": project_id,
+            }
+
+    async def kb_delete_document(
+        self, project_id: str, doc_id: str
+    ) -> Dict[str, Any]:
+        """Delete a document from project.
+
+        Args:
+            project_id: Project identifier
+            doc_id: Document identifier to delete
+
+        Returns:
+            Deletion result with status
+        """
+        try:
+            # Validate inputs
+            try:
+                project_id = self.validator.validate_project_id(project_id)
+                doc_id = self.validator.validate_string(
+                    doc_id, "doc_id", required=True, min_length=1
+                )
+            except ValidationError as e:
+                logger.warning(f"Delete document validation error: {e.message}")
+                return e.to_dict()
+
+            # Verify project exists
+            project = self.project_manager.get_project(project_id)
+            if not project:
+                return {
+                    "error": f"Project not found: {project_id}",
+                    "error_type": "ProjectNotFound",
+                }
+
+            # Get project vector store
+            vector_store = VectorStore(
+                persist_directory=self.config.chroma_path,
+                collection_name=project.collection_name,
+            )
+
+            # Check if document exists
+            try:
+                doc_data = vector_store.get(ids=doc_id)
+                if not doc_data.get("ids"):
+                    return {
+                        "error": f"Document not found: {doc_id}",
+                        "error_type": "DocumentNotFound",
+                        "project_id": project_id,
+                    }
+            except Exception as e:
+                logger.warning(f"Error checking document existence: {e}")
+
+            # Delete document
+            vector_store.delete(ids=doc_id)
+
+            logger.info(f"Document deleted: project={project_id}, doc_id={doc_id}")
+
+            return {
+                "success": True,
+                "project_id": project_id,
+                "doc_id": doc_id,
+                "message": f"Document {doc_id} deleted successfully",
+            }
+
+        except Exception as e:
+            logger.error(f"Delete document error: {e}", exc_info=True)
+            return {
+                "error": str(e),
+                "error_type": "DeleteDocumentError",
+                "project_id": project_id,
+                "doc_id": doc_id,
+            }
