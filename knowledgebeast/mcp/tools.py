@@ -316,7 +316,7 @@ class KnowledgeBeastTools:
                         "name": project.name,
                         "description": project.description,
                         "embedding_model": project.embedding_model,
-                        "created_at": project.created_at.isoformat(),
+                        "created_at": project.created_at,
                     }
                 )
 
@@ -364,7 +364,7 @@ class KnowledgeBeastTools:
                 "description": project.description,
                 "embedding_model": project.embedding_model,
                 "collection_name": project.collection_name,
-                "created_at": project.created_at.isoformat(),
+                "created_at": project.created_at,
             }
 
         except Exception as e:
@@ -403,8 +403,8 @@ class KnowledgeBeastTools:
                 "description": project.description,
                 "embedding_model": project.embedding_model,
                 "collection_name": project.collection_name,
-                "created_at": project.created_at.isoformat(),
-                "updated_at": project.updated_at.isoformat(),
+                "created_at": project.created_at,
+                "updated_at": project.updated_at,
                 "metadata": project.metadata,
                 "document_count": doc_count,
                 "cache_stats": cache_stats,
