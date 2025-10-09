@@ -7,43 +7,23 @@ End-to-end workflow tests including:
 - Batch operations
 - Real ChromaDB interaction
 
-These tests use real ChromaDB (not mocked) for realistic integration testing.
+WARNING: These tests use real ChromaDB (not mocked) and download embedding models.
+They are SKIPPED by default to avoid slow test runs.
+
+Run with: pytest tests/mcp/test_mcp_integration.py -m integration
 """
 
 import pytest
-import tempfile
 import json
 from pathlib import Path
-from typing import Generator
 
 from knowledgebeast.mcp.config import MCPConfig
 from knowledgebeast.mcp.tools import KnowledgeBeastTools
 
+# Mark all tests in this file as integration tests (skipped by default)
+pytestmark = pytest.mark.integration
 
-@pytest.fixture
-def temp_integration_dir() -> Generator[Path, None, None]:
-    """Create temporary directory for integration testing."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        temp_path = Path(tmpdir)
-        yield temp_path
-
-
-@pytest.fixture
-def integration_config(temp_integration_dir: Path) -> MCPConfig:
-    """Create integration test MCP configuration."""
-    return MCPConfig(
-        projects_db_path=str(temp_integration_dir / "integration_projects.db"),
-        chroma_path=str(temp_integration_dir / "integration_chroma"),
-        default_embedding_model="all-MiniLM-L6-v2",
-        cache_capacity=100,
-        log_level="INFO",
-    )
-
-
-@pytest.fixture
-def integration_tools(integration_config: MCPConfig) -> KnowledgeBeastTools:
-    """Create KnowledgeBeast MCP tools for integration testing."""
-    return KnowledgeBeastTools(integration_config)
+# All fixtures imported from conftest.py (integration_tools uses REAL I/O)
 
 
 # ===== Full Lifecycle Workflow Tests =====

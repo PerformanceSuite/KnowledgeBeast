@@ -97,4 +97,7 @@ testpaths = ["tests"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
-addopts = "-v --cov=knowledgebeast --cov-report=term-missing"
+addopts = "-v --cov=knowledgebeast --cov-report=term-missing -m 'not integration'"
+markers = [
+    "integration: marks tests as integration tests (deselected by default, use -m integration to run)",
+]

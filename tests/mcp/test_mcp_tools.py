@@ -7,66 +7,25 @@ Tests all 12 MCP tools with comprehensive coverage including:
 - Error handling
 - Edge cases
 
-Uses mocked ChromaDB for fast, isolated tests.
+Uses mocked ChromaDB for fast, isolated tests (no real I/O).
+Performance target: <5 seconds for all tests.
 """
 
 import pytest
-import tempfile
 from pathlib import Path
-from typing import Generator
 from unittest.mock import Mock, patch, MagicMock
-import time
 
-from knowledgebeast.mcp.config import MCPConfig
-from knowledgebeast.mcp.tools import KnowledgeBeastTools
 from knowledgebeast.core.project_manager import Project
 
-
-@pytest.fixture
-def temp_mcp_dir() -> Generator[Path, None, None]:
-    """Create temporary directory for MCP testing."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        temp_path = Path(tmpdir)
-        yield temp_path
-
-
-@pytest.fixture
-def mcp_config(temp_mcp_dir: Path) -> MCPConfig:
-    """Create test MCP configuration."""
-    return MCPConfig(
-        projects_db_path=str(temp_mcp_dir / "test_projects.db"),
-        chroma_path=str(temp_mcp_dir / "test_chroma"),
-        default_embedding_model="all-MiniLM-L6-v2",
-        cache_capacity=50,
-        log_level="INFO",
-    )
-
-
-@pytest.fixture
-def mcp_tools(mcp_config: MCPConfig) -> KnowledgeBeastTools:
-    """Create KnowledgeBeast MCP tools instance."""
-    return KnowledgeBeastTools(mcp_config)
-
-
-@pytest.fixture
-def sample_project(mcp_tools: KnowledgeBeastTools) -> Project:
-    """Create a sample project for testing."""
-    import asyncio
-    result = asyncio.run(
-        mcp_tools.kb_create_project(
-            name="test-project",
-            description="Test project for unit tests",
-        )
-    )
-    assert result.get("success") is True
-    return mcp_tools.project_manager.get_project(result["project_id"])
+# All fixtures imported from conftest.py (mocked for speed)
+# Note: MCPConfig and KnowledgeBeastTools are mocked to avoid slow I/O
 
 
 # ===== Project Management Tests =====
 
 
 @pytest.mark.asyncio
-async def test_create_project_basic(mcp_tools: KnowledgeBeastTools):
+async def test_create_project_basic(mcp_tools):
     """Test creating a basic project."""
     result = await mcp_tools.kb_create_project(
         name="my-project",
@@ -82,7 +41,7 @@ async def test_create_project_basic(mcp_tools: KnowledgeBeastTools):
 
 
 @pytest.mark.asyncio
-async def test_create_project_custom_model(mcp_tools: KnowledgeBeastTools):
+async def test_create_project_custom_model(mcp_tools):
     """Test creating project with custom embedding model."""
     result = await mcp_tools.kb_create_project(
         name="custom-model-project",
@@ -95,7 +54,7 @@ async def test_create_project_custom_model(mcp_tools: KnowledgeBeastTools):
 
 
 @pytest.mark.asyncio
-async def test_create_project_with_metadata(mcp_tools: KnowledgeBeastTools):
+async def test_create_project_with_metadata(mcp_tools):
     """Test creating project with custom metadata."""
     metadata = {"owner": "test-user", "department": "engineering"}
 
@@ -115,7 +74,7 @@ async def test_create_project_with_metadata(mcp_tools: KnowledgeBeastTools):
 
 
 @pytest.mark.asyncio
-async def test_list_projects_empty(mcp_tools: KnowledgeBeastTools):
+async def test_list_projects_empty(mcp_tools):
     """Test listing projects when none exist."""
     result = await mcp_tools.kb_list_projects()
     assert isinstance(result, list)
@@ -123,7 +82,7 @@ async def test_list_projects_empty(mcp_tools: KnowledgeBeastTools):
 
 
 @pytest.mark.asyncio
-async def test_list_projects_multiple(mcp_tools: KnowledgeBeastTools):
+async def test_list_projects_multiple(mcp_tools):
     """Test listing multiple projects."""
     # Create multiple projects
     await mcp_tools.kb_create_project("project-1", "First project")
@@ -140,7 +99,7 @@ async def test_list_projects_multiple(mcp_tools: KnowledgeBeastTools):
 
 
 @pytest.mark.asyncio
-async def test_get_project_info(mcp_tools: KnowledgeBeastTools, sample_project: Project):
+async def test_get_project_info(mcp_tools, sample_project: Project):
     """Test getting detailed project information."""
     result = await mcp_tools.kb_get_project_info(sample_project.project_id)
 
@@ -155,7 +114,7 @@ async def test_get_project_info(mcp_tools: KnowledgeBeastTools, sample_project: 
 
 
 @pytest.mark.asyncio
-async def test_get_project_info_nonexistent(mcp_tools: KnowledgeBeastTools):
+async def test_get_project_info_nonexistent(mcp_tools):
     """Test getting info for nonexistent project."""
     result = await mcp_tools.kb_get_project_info("nonexistent-project-id")
 
@@ -164,7 +123,7 @@ async def test_get_project_info_nonexistent(mcp_tools: KnowledgeBeastTools):
 
 
 @pytest.mark.asyncio
-async def test_delete_project(mcp_tools: KnowledgeBeastTools):
+async def test_delete_project(mcp_tools):
     """Test deleting a project."""
     # Create project
     create_result = await mcp_tools.kb_create_project("delete-me", "To be deleted")
@@ -183,7 +142,7 @@ async def test_delete_project(mcp_tools: KnowledgeBeastTools):
 
 
 @pytest.mark.asyncio
-async def test_delete_nonexistent_project(mcp_tools: KnowledgeBeastTools):
+async def test_delete_nonexistent_project(mcp_tools):
     """Test deleting a nonexistent project."""
     result = await mcp_tools.kb_delete_project("nonexistent-id")
 
@@ -194,7 +153,7 @@ async def test_delete_nonexistent_project(mcp_tools: KnowledgeBeastTools):
 
 
 @pytest.mark.asyncio
-async def test_ingest_direct_content(mcp_tools: KnowledgeBeastTools, sample_project: Project):
+async def test_ingest_direct_content(mcp_tools, sample_project: Project):
     """Test ingesting document from direct content."""
     content = "Machine learning is a subset of artificial intelligence."
 
@@ -211,7 +170,7 @@ async def test_ingest_direct_content(mcp_tools: KnowledgeBeastTools, sample_proj
 
 @pytest.mark.asyncio
 async def test_ingest_direct_content_with_metadata(
-    mcp_tools: KnowledgeBeastTools, sample_project: Project
+    mcp_tools, sample_project: Project
 ):
     """Test ingesting document with custom metadata."""
     content = "Python is a high-level programming language."
@@ -229,7 +188,7 @@ async def test_ingest_direct_content_with_metadata(
 
 @pytest.mark.asyncio
 async def test_ingest_from_file(
-    mcp_tools: KnowledgeBeastTools, sample_project: Project, temp_mcp_dir: Path
+    mcp_tools, sample_project: Project, temp_mcp_dir: Path
 ):
     """Test ingesting document from file."""
     # Create test file
@@ -249,7 +208,7 @@ async def test_ingest_from_file(
 
 @pytest.mark.asyncio
 async def test_ingest_nonexistent_file(
-    mcp_tools: KnowledgeBeastTools, sample_project: Project
+    mcp_tools, sample_project: Project
 ):
     """Test ingesting from nonexistent file."""
     result = await mcp_tools.kb_ingest(
@@ -263,7 +222,7 @@ async def test_ingest_nonexistent_file(
 
 @pytest.mark.asyncio
 async def test_ingest_no_content_or_file(
-    mcp_tools: KnowledgeBeastTools, sample_project: Project
+    mcp_tools, sample_project: Project
 ):
     """Test ingesting without content or file_path."""
     result = await mcp_tools.kb_ingest(project_id=sample_project.project_id)
@@ -273,7 +232,7 @@ async def test_ingest_no_content_or_file(
 
 
 @pytest.mark.asyncio
-async def test_ingest_to_nonexistent_project(mcp_tools: KnowledgeBeastTools):
+async def test_ingest_to_nonexistent_project(mcp_tools):
     """Test ingesting to nonexistent project."""
     result = await mcp_tools.kb_ingest(
         project_id="nonexistent-project",
@@ -289,7 +248,7 @@ async def test_ingest_to_nonexistent_project(mcp_tools: KnowledgeBeastTools):
 
 @pytest.mark.asyncio
 async def test_list_documents_empty(
-    mcp_tools: KnowledgeBeastTools, sample_project: Project
+    mcp_tools, sample_project: Project
 ):
     """Test listing documents in empty project."""
     result = await mcp_tools.kb_list_documents(sample_project.project_id)
@@ -302,7 +261,7 @@ async def test_list_documents_empty(
 
 @pytest.mark.asyncio
 async def test_list_documents_with_content(
-    mcp_tools: KnowledgeBeastTools, sample_project: Project
+    mcp_tools, sample_project: Project
 ):
     """Test listing documents after ingestion."""
     # Ingest multiple documents
@@ -323,7 +282,7 @@ async def test_list_documents_with_content(
 
 @pytest.mark.asyncio
 async def test_list_documents_with_limit(
-    mcp_tools: KnowledgeBeastTools, sample_project: Project
+    mcp_tools, sample_project: Project
 ):
     """Test listing documents with result limit."""
     # Ingest multiple documents
@@ -337,7 +296,7 @@ async def test_list_documents_with_limit(
 
 
 @pytest.mark.asyncio
-async def test_list_documents_nonexistent_project(mcp_tools: KnowledgeBeastTools):
+async def test_list_documents_nonexistent_project(mcp_tools):
     """Test listing documents for nonexistent project."""
     result = await mcp_tools.kb_list_documents("nonexistent-project")
 
@@ -349,7 +308,7 @@ async def test_list_documents_nonexistent_project(mcp_tools: KnowledgeBeastTools
 
 @pytest.mark.asyncio
 async def test_search_vector_mode(
-    mcp_tools: KnowledgeBeastTools, sample_project: Project
+    mcp_tools, sample_project: Project
 ):
     """Test vector search mode."""
     # Ingest test documents
@@ -379,7 +338,7 @@ async def test_search_vector_mode(
 
 @pytest.mark.asyncio
 async def test_search_keyword_mode(
-    mcp_tools: KnowledgeBeastTools, sample_project: Project
+    mcp_tools, sample_project: Project
 ):
     """Test keyword search mode."""
     # Ingest test documents
@@ -401,7 +360,7 @@ async def test_search_keyword_mode(
 
 @pytest.mark.asyncio
 async def test_search_hybrid_mode(
-    mcp_tools: KnowledgeBeastTools, sample_project: Project
+    mcp_tools, sample_project: Project
 ):
     """Test hybrid search mode (default)."""
     # Ingest test documents
@@ -424,7 +383,7 @@ async def test_search_hybrid_mode(
 
 @pytest.mark.asyncio
 async def test_search_with_custom_alpha(
-    mcp_tools: KnowledgeBeastTools, sample_project: Project
+    mcp_tools, sample_project: Project
 ):
     """Test hybrid search with custom alpha parameter."""
     await mcp_tools.kb_ingest(
@@ -444,7 +403,7 @@ async def test_search_with_custom_alpha(
 
 
 @pytest.mark.asyncio
-async def test_search_nonexistent_project(mcp_tools: KnowledgeBeastTools):
+async def test_search_nonexistent_project(mcp_tools):
     """Test searching in nonexistent project."""
     results = await mcp_tools.kb_search(
         project_id="nonexistent-project",
@@ -458,7 +417,7 @@ async def test_search_nonexistent_project(mcp_tools: KnowledgeBeastTools):
 
 @pytest.mark.asyncio
 async def test_search_empty_project(
-    mcp_tools: KnowledgeBeastTools, sample_project: Project
+    mcp_tools, sample_project: Project
 ):
     """Test searching in project with no documents."""
     results = await mcp_tools.kb_search(
@@ -473,7 +432,7 @@ async def test_search_empty_project(
 
 @pytest.mark.asyncio
 async def test_search_with_result_limit(
-    mcp_tools: KnowledgeBeastTools, sample_project: Project
+    mcp_tools, sample_project: Project
 ):
     """Test search with custom result limit."""
     # Ingest multiple documents
@@ -496,14 +455,14 @@ async def test_search_with_result_limit(
 
 
 @pytest.mark.asyncio
-async def test_error_handling_invalid_project_id(mcp_tools: KnowledgeBeastTools):
+async def test_error_handling_invalid_project_id(mcp_tools):
     """Test error handling with invalid project ID."""
     result = await mcp_tools.kb_get_project_info("")
     assert "error" in result
 
 
 @pytest.mark.asyncio
-async def test_error_handling_search_exception(mcp_tools: KnowledgeBeastTools):
+async def test_error_handling_search_exception(mcp_tools):
     """Test error handling when search raises exception."""
     # Use invalid project to trigger error
     results = await mcp_tools.kb_search(
@@ -520,7 +479,7 @@ async def test_error_handling_search_exception(mcp_tools: KnowledgeBeastTools):
 
 
 @pytest.mark.asyncio
-async def test_project_cache_isolation(mcp_tools: KnowledgeBeastTools):
+async def test_project_cache_isolation(mcp_tools):
     """Test that project caches are isolated."""
     # Create two projects
     result1 = await mcp_tools.kb_create_project("project-1", "First project")
@@ -608,7 +567,7 @@ def test_mcp_config_ensure_directories(temp_mcp_dir: Path):
 
 
 @pytest.mark.asyncio
-async def test_concurrent_project_creation(mcp_tools: KnowledgeBeastTools):
+async def test_concurrent_project_creation(mcp_tools):
     """Test creating multiple projects concurrently."""
     import asyncio
 
@@ -630,7 +589,7 @@ async def test_concurrent_project_creation(mcp_tools: KnowledgeBeastTools):
 
 @pytest.mark.asyncio
 async def test_concurrent_search_requests(
-    mcp_tools: KnowledgeBeastTools, sample_project: Project
+    mcp_tools, sample_project: Project
 ):
     """Test handling concurrent search requests."""
     import asyncio
@@ -659,7 +618,7 @@ async def test_concurrent_search_requests(
 
 @pytest.mark.asyncio
 async def test_ingest_large_document(
-    mcp_tools: KnowledgeBeastTools, sample_project: Project
+    mcp_tools, sample_project: Project
 ):
     """Test ingesting a large document (1MB+)."""
     # Create a large document (approximately 1MB)
@@ -676,7 +635,7 @@ async def test_ingest_large_document(
 
 @pytest.mark.asyncio
 async def test_search_truncates_large_results(
-    mcp_tools: KnowledgeBeastTools, sample_project: Project
+    mcp_tools, sample_project: Project
 ):
     """Test that search results are truncated for large documents."""
     # Ingest large document
