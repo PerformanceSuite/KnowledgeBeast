@@ -134,16 +134,26 @@ def client(clean_project_manager, monkeypatch) -> Generator[TestClient, None, No
     # Reset rate limits before each test
     auth.reset_rate_limit()
 
+    # Disable the custom auth rate limiter by setting a very high limit
+    original_rate_limit = auth.RATE_LIMIT_REQUESTS
+    auth.RATE_LIMIT_REQUESTS = 100000
+    monkeypatch.setattr(auth, "RATE_LIMIT_REQUESTS", 100000)
+
     # Patch the get_project_manager to use our clean instance
     def get_test_project_manager():
         return clean_project_manager
 
     monkeypatch.setattr(routes, "get_project_manager", get_test_project_manager)
 
-    # Disable slowapi rate limiting by monkey-patching the limiter.limit decorator
-    # to return a no-op decorator
-    from slowapi import Limiter
+    # Disable slowapi rate limiting by patching the limiter's enabled flag
+    # and resetting its storage
+    routes.limiter._enabled = False  # Disable the limiter entirely
 
+    # Also reset the storage backend to clear any accumulated state
+    if hasattr(routes.limiter, '_storage'):
+        routes.limiter._storage.reset()
+
+    # Patch the limit decorator to be a no-op
     def noop_limit_decorator(*args, **kwargs):
         """No-op decorator that just returns the function unchanged."""
         def decorator(func):
@@ -153,8 +163,6 @@ def client(clean_project_manager, monkeypatch) -> Generator[TestClient, None, No
             return args[0]
         return decorator
 
-    # Patch the limiter before creating the app
-    original_limiter = routes.limiter
     monkeypatch.setattr(routes.limiter, "limit", noop_limit_decorator)
 
     # Create app
@@ -162,6 +170,9 @@ def client(clean_project_manager, monkeypatch) -> Generator[TestClient, None, No
 
     with TestClient(app) as test_client:
         yield test_client
+
+    # Reset rate limit after test
+    auth.reset_rate_limit()
 
     # Cleanup happens in clean_project_manager fixture
 
