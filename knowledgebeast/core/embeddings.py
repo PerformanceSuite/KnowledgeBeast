@@ -13,6 +13,8 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 
 from knowledgebeast.core.cache import LRUCache
+from knowledgebeast.utils.metrics import record_cache_hit, record_cache_miss
+from knowledgebeast.utils.observability import get_tracer
 
 
 class EmbeddingEngine:
@@ -117,61 +119,78 @@ class EmbeddingEngine:
             >>> len(embeddings)
             2
         """
-        is_single = isinstance(text, str)
-        texts = [text] if is_single else text
+        tracer = get_tracer()
+        with tracer.start_as_current_span("embedding.generate") as span:
+            is_single = isinstance(text, str)
+            texts = [text] if is_single else text
 
-        with self._lock:
-            self.stats["total_queries"] += len(texts)
-
-        # Check cache for each text
-        results = []
-        uncached_texts = []
-        uncached_indices = []
-
-        for i, txt in enumerate(texts):
-            cache_key = self._generate_cache_key(txt)
-
-            if use_cache:
-                cached = self.cache.get(cache_key)
-                if cached is not None:
-                    with self._lock:
-                        self.stats["cache_hits"] += 1
-                    results.append((i, cached))
-                    continue
-
-            # Track uncached texts
-            with self._lock:
-                self.stats["cache_misses"] += 1
-            uncached_texts.append(txt)
-            uncached_indices.append(i)
-
-        # Generate embeddings for uncached texts
-        if uncached_texts:
-            embeddings = self.model.encode(
-                uncached_texts,
-                normalize_embeddings=normalize,
-                show_progress_bar=False,
-                convert_to_numpy=True,
-            )
+            # Add span attributes
+            span.set_attribute("embedding.model", self.model_name)
+            span.set_attribute("embedding.batch_size", len(texts))
+            span.set_attribute("embedding.use_cache", use_cache)
+            span.set_attribute("embedding.normalize", normalize)
 
             with self._lock:
-                self.stats["embeddings_generated"] += len(uncached_texts)
+                self.stats["total_queries"] += len(texts)
 
-            # Cache results
-            for txt, emb in zip(uncached_texts, embeddings):
+            # Check cache for each text
+            results = []
+            uncached_texts = []
+            uncached_indices = []
+
+            for i, txt in enumerate(texts):
+                cache_key = self._generate_cache_key(txt)
+
                 if use_cache:
-                    cache_key = self._generate_cache_key(txt)
-                    self.cache.put(cache_key, emb)
+                    cached = self.cache.get(cache_key)
+                    if cached is not None:
+                        with self._lock:
+                            self.stats["cache_hits"] += 1
+                        record_cache_hit()
+                        results.append((i, cached))
+                        continue
 
-            # Add to results
-            for idx, emb in zip(uncached_indices, embeddings):
-                results.append((idx, emb))
+                # Track uncached texts
+                with self._lock:
+                    self.stats["cache_misses"] += 1
+                record_cache_miss()
+                uncached_texts.append(txt)
+                uncached_indices.append(i)
 
-        # Sort by original index and extract embeddings
-        results.sort(key=lambda x: x[0])
-        embeddings_list = [emb for _, emb in results]
+            # Add cache statistics to span
+            span.set_attribute("embedding.cache_hits", len(texts) - len(uncached_texts))
+            span.set_attribute("embedding.cache_misses", len(uncached_texts))
 
-        return embeddings_list[0] if is_single else embeddings_list
+            # Generate embeddings for uncached texts
+            if uncached_texts:
+                with tracer.start_as_current_span("embedding.model_encode") as encode_span:
+                    encode_span.set_attribute("batch_size", len(uncached_texts))
+                    embeddings = self.model.encode(
+                        uncached_texts,
+                        normalize_embeddings=normalize,
+                        show_progress_bar=False,
+                        convert_to_numpy=True,
+                    )
+
+                with self._lock:
+                    self.stats["embeddings_generated"] += len(uncached_texts)
+
+                # Cache results
+                for txt, emb in zip(uncached_texts, embeddings):
+                    if use_cache:
+                        cache_key = self._generate_cache_key(txt)
+                        self.cache.put(cache_key, emb)
+
+                # Add to results
+                for idx, emb in zip(uncached_indices, embeddings):
+                    results.append((idx, emb))
+
+            # Sort by original index and extract embeddings
+            results.sort(key=lambda x: x[0])
+            embeddings_list = [emb for _, emb in results]
+
+            span.set_attribute("embedding.results_count", len(embeddings_list))
+            return embeddings_list[0] if is_single else embeddings_list
 
     def embed_batch(
         self,

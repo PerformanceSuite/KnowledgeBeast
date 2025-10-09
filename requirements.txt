@@ -11,3 +11,11 @@ tenacity>=8.2.0  # Retry logic for robust I/O operations
 
 # API dependencies
 slowapi>=0.1.9  # Rate limiting for FastAPI
+
+# Observability dependencies
+opentelemetry-api>=1.20.0
+opentelemetry-sdk>=1.20.0
+opentelemetry-instrumentation-fastapi>=0.41b0
+prometheus-client>=0.19.0
+prometheus-fastapi-instrumentator>=6.1.0
+structlog>=23.2.0

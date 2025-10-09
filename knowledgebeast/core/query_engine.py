@@ -14,6 +14,8 @@ from sentence_transformers import SentenceTransformer
 from knowledgebeast.core.repository import DocumentRepository
 from knowledgebeast.core.constants import ERR_EMPTY_SEARCH_TERMS
 from knowledgebeast.core.cache import LRUCache
+from knowledgebeast.utils.metrics import measure_vector_search
+from knowledgebeast.utils.observability import get_tracer
 
 logger = logging.getLogger(__name__)
 
@@ -425,46 +427,65 @@ class HybridQueryEngine:
         Raises:
             ValueError: If alpha not in [0, 1]
         """
-        if not query or not query.strip():
-            return []
+        tracer = get_tracer()
+        with tracer.start_as_current_span("query.hybrid_search") as span:
+            if not query or not query.strip():
+                span.set_attribute("query.empty", True)
+                return []
 
-        alpha = alpha if alpha is not None else self.alpha
-        if not 0 <= alpha <= 1:
-            raise ValueError("alpha must be between 0 and 1")
+            alpha = alpha if alpha is not None else self.alpha
+            if not 0 <= alpha <= 1:
+                raise ValueError("alpha must be between 0 and 1")
 
-        # Get vector scores
-        vector_results = self.search_vector(query, top_k=top_k * 2)  # Get more for reranking
-        vector_scores = {doc_id: score for doc_id, _, score in vector_results}
+            # Add span attributes
+            span.set_attribute("query.text", query[:100])  # Truncate for safety
+            span.set_attribute("query.alpha", alpha)
+            span.set_attribute("query.top_k", top_k)
+            span.set_attribute("query.type", "hybrid")
 
-        # Get keyword scores
-        keyword_results = self.search_keyword(query)
-        keyword_scores = {doc_id: score for doc_id, _, score in keyword_results}
+            # Measure hybrid search with metrics
+            with measure_vector_search("hybrid"):
+                # Get vector scores
+                with tracer.start_as_current_span("query.vector_phase") as vector_span:
+                    vector_results = self.search_vector(query, top_k=top_k * 2)  # Get more for reranking
+                    vector_scores = {doc_id: score for doc_id, _, score in vector_results}
+                    vector_span.set_attribute("results_count", len(vector_results))
 
-        # Combine scores
-        all_doc_ids = set(vector_scores.keys()) | set(keyword_scores.keys())
-        combined_scores = {}
+                # Get keyword scores
+                with tracer.start_as_current_span("query.keyword_phase") as keyword_span:
+                    keyword_results = self.search_keyword(query)
+                    keyword_scores = {doc_id: score for doc_id, _, score in keyword_results}
+                    keyword_span.set_attribute("results_count", len(keyword_results))
 
-        for doc_id in all_doc_ids:
-            v_score = vector_scores.get(doc_id, 0.0)
-            k_score = keyword_scores.get(doc_id, 0.0)
-            combined_scores[doc_id] = alpha * v_score + (1 - alpha) * k_score
+                # Combine scores
+                with tracer.start_as_current_span("query.score_combination") as combine_span:
+                    all_doc_ids = set(vector_scores.keys()) | set(keyword_scores.keys())
+                    combined_scores = {}
 
-        # Sort by combined score
-        ranked_ids = sorted(combined_scores.items(), key=lambda x: x[1], reverse=True)
-        top_ids = ranked_ids[:top_k]
+                    for doc_id in all_doc_ids:
+                        v_score = vector_scores.get(doc_id, 0.0)
+                        k_score = keyword_scores.get(doc_id, 0.0)
+                        combined_scores[doc_id] = alpha * v_score + (1 - alpha) * k_score
 
-        # Retrieve documents
-        doc_ids_top = [doc_id for doc_id, _ in top_ids]
-        documents = self.repository.get_documents_by_ids(doc_ids_top)
+                    # Sort by combined score
+                    ranked_ids = sorted(combined_scores.items(), key=lambda x: x[1], reverse=True)
+                    top_ids = ranked_ids[:top_k]
+                    combine_span.set_attribute("unique_docs", len(all_doc_ids))
+                    combine_span.set_attribute("top_results", len(top_ids))
 
-        # Combine with scores
-        results = [
-            (doc_id, doc, score)
-            for (doc_id, score), doc in zip(top_ids, documents)
-        ]
+                # Retrieve documents
+                doc_ids_top = [doc_id for doc_id, _ in top_ids]
+                documents = self.repository.get_documents_by_ids(doc_ids_top)
 
-        logger.debug(f"Hybrid search (alpha={alpha}) for '{query[:50]}' returned {len(results)} results")
-        return results
+                # Combine with scores
+                results = [
+                    (doc_id, doc, score)
+                    for (doc_id, score), doc in zip(top_ids, documents)
+                ]
+
+            span.set_attribute("query.final_results", len(results))
+            logger.debug(f"Hybrid search (alpha={alpha}) for '{query[:50]}' returned {len(results)} results")
+            return results
 
     def search_with_mmr(
         self,

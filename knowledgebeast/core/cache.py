@@ -1,8 +1,11 @@
 """LRU Cache implementation using OrderedDict."""
 
 import threading
+import time
 from collections import OrderedDict
 from typing import Any, Generic, Optional, TypeVar
+
+from knowledgebeast.utils.metrics import measure_cache_operation
 
 K = TypeVar("K")
 V = TypeVar("V")
@@ -43,12 +46,13 @@ class LRUCache(Generic[K, V]):
         Returns:
             The cached value if found, None otherwise
         """
-        with self._lock:
-            if key not in self.cache:
-                return None
-            # Move to end to mark as recently used
-            self.cache.move_to_end(key)
-            return self.cache[key]
+        with measure_cache_operation("get", "lru"):
+            with self._lock:
+                if key not in self.cache:
+                    return None
+                # Move to end to mark as recently used
+                self.cache.move_to_end(key)
+                return self.cache[key]
     
     def put(self, key: K, value: V) -> None:
         """Put an item in the cache.
@@ -57,20 +61,22 @@ class LRUCache(Generic[K, V]):
             key: The key to store under
             value: The value to store
         """
-        with self._lock:
-            if key in self.cache:
-                # Update existing key and move to end
-                self.cache.move_to_end(key)
-            self.cache[key] = value
+        with measure_cache_operation("put", "lru"):
+            with self._lock:
+                if key in self.cache:
+                    # Update existing key and move to end
+                    self.cache.move_to_end(key)
+                self.cache[key] = value
 
-            # Remove least recently used item if over capacity
-            if len(self.cache) > self.capacity:
-                self.cache.popitem(last=False)
+                # Remove least recently used item if over capacity
+                if len(self.cache) > self.capacity:
+                    self.cache.popitem(last=False)
     
     def clear(self) -> None:
         """Clear all items from the cache."""
-        with self._lock:
-            self.cache.clear()
+        with measure_cache_operation("clear", "lru"):
+            with self._lock:
+                self.cache.clear()
     
     def __len__(self) -> int:
         """Return the current number of items in the cache."""
