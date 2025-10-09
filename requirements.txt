@@ -5,6 +5,8 @@ click>=8.1.0
 rich>=13.0.0
 chromadb>=0.4.0
 sentence-transformers>=2.2.0
+torch>=2.0.0  # Required for cross-encoder and MMR models
+numpy>=1.24.0  # Required for re-ranking computations
 pydantic>=2.0.0
 uvicorn[standard]>=0.27.0
 tenacity>=8.2.0  # Retry logic for robust I/O operations
@@ -20,3 +22,12 @@ opentelemetry-instrumentation-fastapi>=0.41b0
 prometheus-client>=0.19.0
 prometheus-fastapi-instrumentator>=6.1.0
 structlog>=23.2.0
+
+# Multi-modal dependencies
+PyPDF2>=3.0.0  # PDF text extraction
+pdfplumber>=0.10.0  # Advanced PDF parsing with layout awareness
+pytesseract>=0.3.10  # OCR for scanned PDFs and images
+pillow>=10.0.0  # Image processing and manipulation
+transformers>=4.30.0  # CLIP and BLIP models
+torch>=2.0.0  # PyTorch for ML models
+torchvision>=0.15.0  # Vision models and transforms

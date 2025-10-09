@@ -50,6 +50,22 @@ class QueryRequest(BaseModel):
         ge=0,
         description="Number of results to skip for pagination"
     )
+    rerank: bool = Field(
+        default=False,
+        description="Whether to apply re-ranking to improve relevance"
+    )
+    rerank_top_k: int = Field(
+        default=50,
+        ge=1,
+        le=100,
+        description="Number of candidates to re-rank (must be >= limit)"
+    )
+    diversity: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Diversity parameter for MMR (0-1, higher = more relevance, lower = more diversity)"
+    )
 
     @field_validator('query')
     @classmethod
@@ -106,6 +122,22 @@ class PaginatedQueryRequest(BaseModel):
         ge=1,
         le=100,
         description="Number of results per page (1-100)"
+    )
+    rerank: bool = Field(
+        default=False,
+        description="Whether to apply re-ranking to improve relevance"
+    )
+    rerank_top_k: int = Field(
+        default=50,
+        ge=1,
+        le=100,
+        description="Number of candidates to re-rank before pagination"
+    )
+    diversity: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Diversity parameter for MMR (0-1)"
     )
 
     @field_validator('query')
@@ -267,6 +299,10 @@ class QueryResult(BaseModel):
     name: str = Field(..., description="Document name")
     path: str = Field(..., description="Full file path")
     kb_dir: str = Field(..., description="Knowledge base directory")
+    vector_score: Optional[float] = Field(None, description="Original vector similarity score (0-1)")
+    rerank_score: Optional[float] = Field(None, description="Re-ranking relevance score (0-1)")
+    final_score: Optional[float] = Field(None, description="Final combined score (0-1)")
+    rank: Optional[int] = Field(None, description="Result rank position (1-indexed)")
 
 
 class QueryResponse(BaseModel):
@@ -281,12 +317,21 @@ class QueryResponse(BaseModel):
                         "content": "Librosa guide...",
                         "name": "Librosa Guide",
                         "path": "/path/to/librosa.md",
-                        "kb_dir": "/knowledge-base"
+                        "kb_dir": "/knowledge-base",
+                        "vector_score": 0.87,
+                        "rerank_score": 0.95,
+                        "final_score": 0.95,
+                        "rank": 1
                     }
                 ],
                 "count": 1,
                 "cached": True,
-                "query": "librosa audio analysis"
+                "query": "librosa audio analysis",
+                "metadata": {
+                    "reranked": True,
+                    "rerank_model": "ms-marco-MiniLM-L-6-v2",
+                    "rerank_duration_ms": 45
+                }
             }
         }
     )
@@ -295,6 +340,10 @@ class QueryResponse(BaseModel):
     count: int = Field(..., description="Number of results returned")
     cached: bool = Field(..., description="Whether results were served from cache")
     query: str = Field(..., description="Original query string")
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Additional metadata (e.g., reranking info)"
+    )
 
 
 class PaginationMetadata(BaseModel):
@@ -780,6 +829,22 @@ class ProjectQueryRequest(BaseModel):
         le=100,
         description="Maximum number of results (1-100)"
     )
+    rerank: bool = Field(
+        default=False,
+        description="Whether to apply re-ranking to improve relevance"
+    )
+    rerank_top_k: int = Field(
+        default=50,
+        ge=1,
+        le=100,
+        description="Number of candidates to re-rank before limiting results"
+    )
+    diversity: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Diversity parameter for MMR (0-1)"
+    )
 
     @field_validator('query')
     @classmethod
@@ -859,3 +924,183 @@ class ProjectDeleteResponse(BaseModel):
     success: bool = Field(..., description="Whether deletion succeeded")
     project_id: str = Field(..., description="Deleted project ID")
     message: str = Field(..., description="Status message")
+
+
+# ============================================================================
+# Multi-Modal API Models
+# ============================================================================
+
+class MultiModalUploadRequest(BaseModel):
+    """Request model for multi-modal document upload."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "file_path": "/path/to/document.pdf",
+                "file_type": "pdf",
+                "extract_images": True,
+                "use_ocr": False,
+                "generate_embeddings": True,
+                "metadata": {"category": "research"}
+            }
+        }
+    )
+
+    file_path: str = Field(
+        ...,
+        description="Path to file to process"
+    )
+    file_type: Optional[str] = Field(
+        None,
+        description="File type override (auto-detected if not provided)"
+    )
+    extract_images: bool = Field(
+        default=False,
+        description="Extract images from PDFs"
+    )
+    use_ocr: bool = Field(
+        default=False,
+        description="Use OCR for text extraction from images/scanned PDFs"
+    )
+    generate_embeddings: bool = Field(
+        default=True,
+        description="Generate CLIP embeddings for images"
+    )
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Additional metadata"
+    )
+
+    @field_validator('file_path')
+    @classmethod
+    def validate_multimodal_file_path(cls, v: str) -> str:
+        """Validate file path for multi-modal upload."""
+        if '..' in v:
+            raise ValueError("Path traversal detected: '..' not allowed")
+
+        try:
+            path = Path(v)
+        except Exception as e:
+            raise ValueError(f"Invalid file path: {e}")
+
+        # Multimodal supported extensions
+        allowed_extensions = {
+            '.pdf', '.md', '.txt', '.docx', '.html', '.htm',  # Documents
+            '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp',  # Images
+            '.py', '.js', '.ts', '.java', '.cpp', '.c', '.go', '.rs'  # Code
+        }
+
+        if path.suffix.lower() not in allowed_extensions:
+            raise ValueError(
+                f"Unsupported file type: {path.suffix}. "
+                f"Supported: {', '.join(sorted(allowed_extensions))}"
+            )
+
+        return v
+
+
+class MultiModalUploadResponse(BaseModel):
+    """Response model for multi-modal document upload."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "success": True,
+                "document_id": "doc_123",
+                "file_type": "pdf",
+                "file_path": "/path/to/document.pdf",
+                "chunks_created": 15,
+                "images_extracted": 3,
+                "has_embeddings": True,
+                "processing_time_ms": 1250,
+                "metadata": {"pages": 10}
+            }
+        }
+    )
+
+    success: bool = Field(..., description="Whether upload succeeded")
+    document_id: str = Field(..., description="Generated document ID")
+    file_type: str = Field(..., description="Detected/specified file type")
+    file_path: str = Field(..., description="Path to processed file")
+    chunks_created: int = Field(..., description="Number of text chunks created")
+    images_extracted: int = Field(
+        default=0,
+        description="Number of images extracted (PDFs only)"
+    )
+    has_embeddings: bool = Field(
+        default=False,
+        description="Whether embeddings were generated"
+    )
+    processing_time_ms: float = Field(..., description="Processing time in milliseconds")
+    metadata: Dict[str, Any] = Field(..., description="Document metadata")
+
+
+class MultiModalQueryRequest(BaseModel):
+    """Request model for multi-modal search."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "query": "machine learning algorithms",
+                "modalities": ["text", "image", "code"],
+                "code_language": "python",
+                "use_cache": True,
+                "limit": 10
+            }
+        }
+    )
+
+    query: str = Field(
+        ...,
+        description="Search query (text or image path for image search)",
+        min_length=1,
+        max_length=1000
+    )
+    modalities: Optional[List[str]] = Field(
+        default=None,
+        description="Filter by modalities: text, image, code"
+    )
+    code_language: Optional[str] = Field(
+        None,
+        description="Filter code files by language (e.g., 'python', 'javascript')"
+    )
+    use_cache: bool = Field(
+        default=True,
+        description="Whether to use cached results"
+    )
+    limit: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Maximum number of results"
+    )
+
+    @field_validator('modalities')
+    @classmethod
+    def validate_modalities(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        """Validate modality filters."""
+        if v is None:
+            return None
+
+        allowed_modalities = {'text', 'image', 'code', 'document'}
+        for modality in v:
+            if modality not in allowed_modalities:
+                raise ValueError(
+                    f"Invalid modality: {modality}. "
+                    f"Allowed: {', '.join(sorted(allowed_modalities))}"
+                )
+
+        return v
+
+    @field_validator('query')
+    @classmethod
+    def sanitize_multimodal_query(cls, v: str) -> str:
+        """Sanitize query string."""
+        dangerous_chars = ['<', '>', ';', '&', '|', '$', '`', '\n', '\r']
+        for char in dangerous_chars:
+            if char in v:
+                raise ValueError(f"Query contains invalid character: {char}")
+        v = v.strip()
+        if not v:
+            raise ValueError("Query cannot be empty or only whitespace")
+        return v
