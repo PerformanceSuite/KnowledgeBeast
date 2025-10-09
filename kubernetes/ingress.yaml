@@ -1,0 +1,188 @@
+---
+# KnowledgeBeast Ingress
+# NGINX Ingress with TLS, rate limiting, and path-based routing
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: knowledgebeast-ingress
+  namespace: knowledgebeast
+  labels:
+    app: knowledgebeast
+  annotations:
+    # Ingress class
+    kubernetes.io/ingress.class: nginx
+
+    # TLS configuration
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+
+    # Rate limiting
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/limit-rps: "10"
+    nginx.ingress.kubernetes.io/limit-rpm: "600"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "5"
+
+    # Connection limits
+    nginx.ingress.kubernetes.io/limit-connections: "20"
+
+    # CORS configuration
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "https://app.knowledgebeast.com"
+    nginx.ingress.kubernetes.io/cors-allow-credentials: "true"
+
+    # Security headers
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Frame-Options: DENY";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      more_set_headers "X-XSS-Protection: 1; mode=block";
+      more_set_headers "Referrer-Policy: strict-origin-when-cross-origin";
+      more_set_headers "Content-Security-Policy: default-src 'self'";
+      more_set_headers "Strict-Transport-Security: max-age=31536000; includeSubDomains";
+
+    # Proxy settings
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+
+    # Buffering
+    nginx.ingress.kubernetes.io/proxy-buffering: "on"
+    nginx.ingress.kubernetes.io/proxy-buffer-size: "4k"
+
+    # Session affinity
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/session-cookie-name: "kb-affinity"
+    nginx.ingress.kubernetes.io/session-cookie-expires: "172800"
+    nginx.ingress.kubernetes.io/session-cookie-max-age: "172800"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: "Strict"
+
+    # Health checks
+    nginx.ingress.kubernetes.io/health-check-path: "/health"
+    nginx.ingress.kubernetes.io/health-check-interval: "30s"
+
+    # Monitoring
+    nginx.ingress.kubernetes.io/enable-opentelemetry: "true"
+    nginx.ingress.kubernetes.io/opentelemetry-trust-incoming-span: "true"
+
+spec:
+  tls:
+    - hosts:
+        - api.knowledgebeast.com
+        - knowledgebeast.com
+      secretName: knowledgebeast-tls
+
+  rules:
+    # Main API domain
+    - host: api.knowledgebeast.com
+      http:
+        paths:
+          # API endpoints
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: knowledgebeast-api
+                port:
+                  name: http
+
+          # Health check endpoint
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: knowledgebeast-api
+                port:
+                  name: http
+
+          # Metrics endpoint (protected)
+          - path: /metrics
+            pathType: Exact
+            backend:
+              service:
+                name: knowledgebeast-api
+                port:
+                  name: metrics
+
+    # Root domain redirect
+    - host: knowledgebeast.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: knowledgebeast-api
+                port:
+                  name: http
+
+---
+# Monitoring Ingress
+# Separate ingress for monitoring tools (Grafana, Prometheus)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: knowledgebeast-monitoring-ingress
+  namespace: knowledgebeast
+  labels:
+    app: knowledgebeast
+    component: monitoring
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+
+    # Basic auth for monitoring endpoints
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: monitoring-basic-auth
+    nginx.ingress.kubernetes.io/auth-realm: "Authentication Required"
+
+    # IP whitelist for monitoring
+    nginx.ingress.kubernetes.io/whitelist-source-range: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+
+spec:
+  tls:
+    - hosts:
+        - monitoring.knowledgebeast.com
+      secretName: monitoring-tls
+
+  rules:
+    - host: monitoring.knowledgebeast.com
+      http:
+        paths:
+          # Grafana
+          - path: /grafana
+            pathType: Prefix
+            backend:
+              service:
+                name: knowledgebeast-grafana
+                port:
+                  name: http
+
+          # Prometheus
+          - path: /prometheus
+            pathType: Prefix
+            backend:
+              service:
+                name: knowledgebeast-prometheus
+                port:
+                  name: http
+
+---
+# Rate Limit Configuration
+# Define rate limiting policies
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ingress-rate-limit-config
+  namespace: knowledgebeast
+data:
+  # Global rate limit: 1000 requests per minute per IP
+  global-rate-limit: "1000"
+
+  # API rate limit: 100 requests per minute per IP
+  api-rate-limit: "100"
+
+  # Burst multiplier
+  burst-multiplier: "5"

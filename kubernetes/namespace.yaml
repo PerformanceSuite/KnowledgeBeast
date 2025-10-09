@@ -1,0 +1,83 @@
+---
+# KnowledgeBeast Namespace
+# Isolated namespace for all KnowledgeBeast resources
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: knowledgebeast
+  labels:
+    name: knowledgebeast
+    environment: production
+    app: knowledgebeast
+  annotations:
+    description: "KnowledgeBeast production environment"
+
+---
+# Resource Quota for the namespace
+# Limits total resource consumption
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: knowledgebeast-quota
+  namespace: knowledgebeast
+spec:
+  hard:
+    # Compute resources
+    requests.cpu: "20"
+    requests.memory: 40Gi
+    limits.cpu: "40"
+    limits.memory: 80Gi
+
+    # Storage resources
+    requests.storage: 500Gi
+    persistentvolumeclaims: "10"
+
+    # Object counts
+    pods: "50"
+    services: "20"
+    configmaps: "20"
+    secrets: "20"
+    replicationcontrollers: "0"
+    deployments.apps: "20"
+    statefulsets.apps: "5"
+
+---
+# Limit Range for the namespace
+# Sets default resource limits for pods
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: knowledgebeast-limitrange
+  namespace: knowledgebeast
+spec:
+  limits:
+    # Container limits
+    - type: Container
+      max:
+        cpu: "4"
+        memory: 8Gi
+      min:
+        cpu: "100m"
+        memory: 128Mi
+      default:
+        cpu: "500m"
+        memory: 512Mi
+      defaultRequest:
+        cpu: "250m"
+        memory: 256Mi
+
+    # Pod limits
+    - type: Pod
+      max:
+        cpu: "8"
+        memory: 16Gi
+      min:
+        cpu: "100m"
+        memory: 128Mi
+
+    # PVC limits
+    - type: PersistentVolumeClaim
+      max:
+        storage: 100Gi
+      min:
+        storage: 1Gi

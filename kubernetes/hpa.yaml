@@ -1,0 +1,168 @@
+---
+# Horizontal Pod Autoscaler for KnowledgeBeast API
+# Automatically scales based on CPU, memory, and custom metrics
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: knowledgebeast-api-hpa
+  namespace: knowledgebeast
+  labels:
+    app: knowledgebeast
+    component: api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: knowledgebeast-api
+
+  minReplicas: 2
+  maxReplicas: 10
+
+  # Scaling behavior configuration
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+      selectPolicy: Max
+
+    scaleDown:
+      stabilizationWindowSeconds: 300  # 5 minutes
+      policies:
+        - type: Percent
+          value: 25
+          periodSeconds: 120
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+      selectPolicy: Min
+
+  metrics:
+    # CPU-based scaling
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70  # Target 70% CPU utilization
+
+    # Memory-based scaling
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80  # Target 80% memory utilization
+
+    # Custom metrics - requests per second
+    - type: Pods
+      pods:
+        metric:
+          name: http_requests_per_second
+        target:
+          type: AverageValue
+          averageValue: "100"  # Scale when > 100 req/s per pod
+
+    # Custom metrics - query latency
+    - type: Pods
+      pods:
+        metric:
+          name: query_latency_p95_seconds
+        target:
+          type: AverageValue
+          averageValue: "0.1"  # Scale when P95 latency > 100ms
+
+---
+# Vertical Pod Autoscaler for ChromaDB (Optional)
+# Automatically adjusts resource requests/limits
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: knowledgebeast-chromadb-vpa
+  namespace: knowledgebeast
+  labels:
+    app: knowledgebeast
+    component: chromadb
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: knowledgebeast-chromadb
+
+  updatePolicy:
+    updateMode: "Auto"  # Automatically apply recommendations
+
+  resourcePolicy:
+    containerPolicies:
+      - containerName: chromadb
+        minAllowed:
+          cpu: 250m
+          memory: 256Mi
+        maxAllowed:
+          cpu: 2000m
+          memory: 2Gi
+        controlledResources:
+          - cpu
+          - memory
+
+---
+# PodDisruptionBudget for API
+# Ensures minimum availability during voluntary disruptions
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: knowledgebeast-api-pdb
+  namespace: knowledgebeast
+  labels:
+    app: knowledgebeast
+    component: api
+spec:
+  minAvailable: 2  # Always keep at least 2 pods running
+  selector:
+    matchLabels:
+      app: knowledgebeast
+      component: api
+
+  # Allow disruption during specific time windows (optional)
+  # unhealthyPodEvictionPolicy: AlwaysAllow
+
+---
+# PodDisruptionBudget for ChromaDB
+# Prevent disruption of database pods
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: knowledgebeast-chromadb-pdb
+  namespace: knowledgebeast
+  labels:
+    app: knowledgebeast
+    component: chromadb
+spec:
+  minAvailable: 1  # Always keep database running
+  selector:
+    matchLabels:
+      app: knowledgebeast
+      component: chromadb
+
+---
+# PodDisruptionBudget for Redis
+# Prevent cache disruption
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: knowledgebeast-redis-pdb
+  namespace: knowledgebeast
+  labels:
+    app: knowledgebeast
+    component: redis
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: knowledgebeast
+      component: redis

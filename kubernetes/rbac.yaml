@@ -1,0 +1,185 @@
+---
+# Service Account for KnowledgeBeast API
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: knowledgebeast-api
+  namespace: knowledgebeast
+  labels:
+    app: knowledgebeast
+    component: api
+automountServiceAccountToken: true
+
+---
+# Role for KnowledgeBeast API
+# Defines permissions within the namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: knowledgebeast-api-role
+  namespace: knowledgebeast
+  labels:
+    app: knowledgebeast
+    component: api
+rules:
+  # Allow reading ConfigMaps
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+
+  # Allow reading Secrets
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+
+  # Allow reading Services
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list"]
+
+  # Allow reading Endpoints
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["get", "list", "watch"]
+
+  # Allow reading Pods (for service discovery)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+
+  # Allow creating Events
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+
+---
+# RoleBinding for KnowledgeBeast API
+# Binds the role to the service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: knowledgebeast-api-rolebinding
+  namespace: knowledgebeast
+  labels:
+    app: knowledgebeast
+    component: api
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: knowledgebeast-api-role
+subjects:
+  - kind: ServiceAccount
+    name: knowledgebeast-api
+    namespace: knowledgebeast
+
+---
+# ClusterRole for monitoring (if needed)
+# For cross-namespace monitoring
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: knowledgebeast-monitoring
+  labels:
+    app: knowledgebeast
+    component: monitoring
+rules:
+  # Read-only access to pods across namespaces
+  - apiGroups: [""]
+    resources: ["pods", "services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+
+  # Read metrics
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list"]
+
+---
+# ClusterRoleBinding for monitoring
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: knowledgebeast-monitoring-binding
+  labels:
+    app: knowledgebeast
+    component: monitoring
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: knowledgebeast-monitoring
+subjects:
+  - kind: ServiceAccount
+    name: knowledgebeast-api
+    namespace: knowledgebeast
+
+---
+# PodSecurityPolicy (if PSP is enabled)
+# Defines security constraints for pods
+apiVersion: policy/v1beta1
+kind: PodSecurityPolicy
+metadata:
+  name: knowledgebeast-psp
+  labels:
+    app: knowledgebeast
+  annotations:
+    seccomp.security.alpha.kubernetes.io/allowedProfileNames: 'runtime/default'
+    apparmor.security.beta.kubernetes.io/allowedProfileNames: 'runtime/default'
+    seccomp.security.alpha.kubernetes.io/defaultProfileName: 'runtime/default'
+    apparmor.security.beta.kubernetes.io/defaultProfileName: 'runtime/default'
+spec:
+  privileged: false
+  allowPrivilegeEscalation: false
+  requiredDropCapabilities:
+    - ALL
+  volumes:
+    - 'configMap'
+    - 'emptyDir'
+    - 'projected'
+    - 'secret'
+    - 'downwardAPI'
+    - 'persistentVolumeClaim'
+  hostNetwork: false
+  hostIPC: false
+  hostPID: false
+  runAsUser:
+    rule: 'MustRunAsNonRoot'
+  seLinux:
+    rule: 'RunAsAny'
+  supplementalGroups:
+    rule: 'RunAsAny'
+  fsGroup:
+    rule: 'RunAsAny'
+  readOnlyRootFilesystem: true
+
+---
+# Role to use the PodSecurityPolicy
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: knowledgebeast-psp-role
+  namespace: knowledgebeast
+  labels:
+    app: knowledgebeast
+rules:
+  - apiGroups: ['policy']
+    resources: ['podsecuritypolicies']
+    verbs: ['use']
+    resourceNames:
+      - knowledgebeast-psp
+
+---
+# RoleBinding for PodSecurityPolicy
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: knowledgebeast-psp-rolebinding
+  namespace: knowledgebeast
+  labels:
+    app: knowledgebeast
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: knowledgebeast-psp-role
+subjects:
+  - kind: ServiceAccount
+    name: knowledgebeast-api
+    namespace: knowledgebeast
