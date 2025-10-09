@@ -8,6 +8,9 @@ Production-ready FastAPI application with:
 - OpenAPI documentation customization
 - Rate limiting support
 - Health monitoring
+- OpenTelemetry distributed tracing
+- Prometheus metrics
+- Structured logging
 """
 
 import logging
@@ -21,8 +24,11 @@ from typing import AsyncIterator, Union
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from prometheus_fastapi_instrumentator import Instrumentator
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -37,6 +43,18 @@ from knowledgebeast.api.middleware import (
 )
 from knowledgebeast.api.models import ErrorResponse
 from knowledgebeast.api.routes import cleanup_executor, cleanup_heartbeat, get_kb_instance, router, router_v2
+from knowledgebeast.utils.observability import (
+    initialize_observability,
+    metrics_registry,
+)
+
+# Initialize observability
+initialize_observability(
+    enable_tracing=os.getenv("KB_ENABLE_TRACING", "true").lower() == "true",
+    enable_metrics=os.getenv("KB_ENABLE_METRICS", "true").lower() == "true",
+    enable_logging=os.getenv("KB_ENABLE_STRUCTURED_LOGGING", "true").lower() == "true",
+    otlp_endpoint=os.getenv("KB_OTLP_ENDPOINT")
+)
 
 # Setup logging
 logging.basicConfig(
@@ -235,6 +253,14 @@ def create_app() -> FastAPI:
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+    # Configure OpenTelemetry instrumentation for FastAPI
+    FastAPIInstrumentor.instrument_app(app)
+    logger.info("OpenTelemetry FastAPI instrumentation enabled")
+
+    # Configure Prometheus instrumentation
+    Instrumentator().instrument(app)
+    logger.info("Prometheus FastAPI instrumentation enabled")
+
     # Include routers with API versioning
     # V1 routes (legacy)
     app.include_router(router, prefix="/api/v1")
@@ -398,6 +424,19 @@ async def health() -> dict:
         "kb_stats": stats,
         "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     }
+
+
+@app.get("/metrics", tags=["observability"])
+async def metrics() -> Response:
+    """Prometheus metrics endpoint.
+
+    Returns:
+        Prometheus-formatted metrics
+    """
+    return Response(
+        content=generate_latest(metrics_registry),
+        media_type=CONTENT_TYPE_LATEST
+    )
 
 
 if __name__ == "__main__":
