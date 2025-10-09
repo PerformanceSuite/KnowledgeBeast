@@ -42,8 +42,11 @@ class RecursiveCharacterChunker(BaseChunker):
             raise ValueError("chunk_size must be positive")
         if self.chunk_overlap < 0:
             raise ValueError("chunk_overlap must be non-negative")
+
+        # Auto-adjust overlap if it's >= chunk_size (e.g., when chunk_size is set small)
         if self.chunk_overlap >= self.chunk_size:
-            raise ValueError("chunk_overlap must be less than chunk_size")
+            # Set overlap to 25% of chunk_size (reasonable default)
+            self.chunk_overlap = max(1, self.chunk_size // 4)
 
         # Initialize token encoding
         try:

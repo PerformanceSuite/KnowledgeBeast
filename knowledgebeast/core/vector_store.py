@@ -21,7 +21,11 @@ import numpy as np
 from chromadb.config import Settings
 from chromadb.utils import embedding_functions
 
+from knowledgebeast.core.circuit_breaker import CircuitBreaker, CircuitBreakerError
+from knowledgebeast.core.retry_logic import chromadb_retry
 from knowledgebeast.utils.observability import get_tracer
+
+logger = logging.getLogger(__name__)
 
 
 class VectorStore:
