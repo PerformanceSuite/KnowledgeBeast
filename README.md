@@ -252,6 +252,102 @@ knowledgebeast serve --host 0.0.0.0 --port 8000
 knowledgebeast cache clear
 ```
 
+## MCP Server (Claude Code Integration)
+
+KnowledgeBeast provides a native **Model Context Protocol (MCP)** server that integrates seamlessly with Claude Desktop and Claude Code. This allows Claude to directly access your knowledge bases, search documents, and manage projects through natural language.
+
+### Quick Setup
+
+1. **Start the MCP Server:**
+
+```bash
+knowledgebeast mcp-server --projects-db ./kb_projects.db --chroma-path ./chroma_db
+```
+
+2. **Configure Claude Desktop:**
+
+Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+
+```json
+{
+  "mcpServers": {
+    "knowledgebeast": {
+      "command": "knowledgebeast",
+      "args": [
+        "mcp-server",
+        "--projects-db", "/absolute/path/to/kb_projects.db",
+        "--chroma-path", "/absolute/path/to/chroma_db"
+      ],
+      "env": {
+        "KB_LOG_LEVEL": "INFO"
+      }
+    }
+  }
+}
+```
+
+3. **Restart Claude Desktop** and start using KnowledgeBeast through natural language:
+
+```
+"Create a knowledge base project called 'technical-docs'"
+"Ingest this document into technical-docs: 'Machine learning is...'"
+"Search technical-docs for 'API authentication best practices'"
+```
+
+### Available MCP Tools
+
+Once connected, Claude has access to these KnowledgeBeast operations:
+
+**Knowledge Management:**
+- `kb_search` - Search documents (vector, keyword, hybrid modes)
+- `kb_ingest` - Add documents from content or files
+- `kb_list_documents` - List project documents
+- `kb_batch_ingest` - Bulk document ingestion
+- `kb_delete_document` - Remove documents
+
+**Project Management:**
+- `kb_list_projects` - List all projects
+- `kb_create_project` - Create new projects
+- `kb_get_project_info` - Get project details and statistics
+- `kb_delete_project` - Delete projects
+
+**Advanced Operations:**
+- `kb_export_project` - Export project data to JSON
+- `kb_import_project` - Import project from JSON
+- `kb_create_template` - Create reusable project templates
+
+### Documentation
+
+- **[Setup Guide](./docs/mcp/CLAUDE_CODE_SETUP.md)**: Complete installation and configuration
+- **[Examples](./docs/mcp/EXAMPLES.md)**: Common workflows and patterns
+- **[Troubleshooting](./docs/mcp/CLAUDE_CODE_SETUP.md#troubleshooting)**: Common issues and solutions
+
+### Example Workflows
+
+**Creating a Knowledge Base:**
+```
+User: "Create a project called 'api-docs' for API documentation"
+Claude: [Uses kb_create_project tool]
+        Project created with ID: proj_abc123
+```
+
+**Ingesting Documents:**
+```
+User: "Add the file /docs/rest-api.md to api-docs"
+Claude: [Uses kb_ingest tool]
+        Document ingested successfully (doc_xyz789)
+```
+
+**Searching:**
+```
+User: "Search api-docs for 'authentication methods'"
+Claude: [Uses kb_search tool with hybrid mode]
+        Found 3 relevant documents:
+        1. OAuth 2.0 Implementation Guide (score: 0.92)
+        2. API Key Authentication (score: 0.85)
+        3. JWT Token Best Practices (score: 0.78)
+```
+
 ## Web UI
 
 Start the server:
