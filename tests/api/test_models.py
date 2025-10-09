@@ -159,11 +159,15 @@ class TestQueryRequest:
         req = QueryRequest(query="test", use_cache=False, limit=20, offset=10)
         data = req.model_dump()
 
+        # Phase 2 added re-ranking fields
         assert data == {
             "query": "test",
             "use_cache": False,
             "limit": 20,
-            "offset": 10
+            "offset": 10,
+            "rerank": False,
+            "rerank_top_k": 50,
+            "diversity": None
         }
 
     def test_json_serialization(self):

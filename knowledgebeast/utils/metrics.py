@@ -22,6 +22,10 @@ from knowledgebeast.utils.observability import (
     query_duration,
     query_expansion_duration,
     query_expansions_total,
+    reranking_duration,
+    reranking_model_loads_total,
+    reranking_requests_total,
+    reranking_score_improvement,
     semantic_cache_hits_total,
     semantic_cache_misses_total,
     semantic_cache_similarity_scores,
@@ -260,3 +264,68 @@ def record_semantic_cache_miss() -> None:
     """Record semantic cache miss."""
     semantic_cache_misses_total.inc()
     logger.debug("semantic_cache_miss_recorded")
+
+
+# Re-ranking metrics (Phase 2)
+def record_model_load(model_name: str) -> None:
+    """Record re-ranking model load.
+
+    Args:
+        model_name: Name of the loaded model
+    """
+    reranking_model_loads_total.labels(model_name=model_name).inc()
+    logger.debug(
+        "reranking_model_loaded",
+        model_name=model_name
+    )
+
+
+def record_score_improvement(
+    reranker_type: str,
+    vector_score: float,
+    rerank_score: float
+) -> None:
+    """Record score improvement from re-ranking.
+
+    Args:
+        reranker_type: Type of reranker ("cross_encoder", "mmr")
+        vector_score: Original vector search score
+        rerank_score: Re-ranked score
+    """
+    improvement = rerank_score - vector_score
+    reranking_score_improvement.labels(reranker_type=reranker_type).observe(improvement)
+    logger.debug(
+        "reranking_score_improvement_recorded",
+        reranker_type=reranker_type,
+        improvement=improvement
+    )
+
+
+@contextmanager
+def measure_reranking(reranker_type: str) -> Generator[None, None, None]:
+    """Context manager to measure and record re-ranking operations.
+
+    Args:
+        reranker_type: Type of reranker ("cross_encoder", "mmr")
+
+    Example:
+        with measure_reranking("cross_encoder"):
+            results = reranker.rerank(query, results)
+    """
+    start_time = time.time()
+    status = "success"
+    try:
+        yield
+    except Exception:
+        status = "error"
+        raise
+    finally:
+        duration = time.time() - start_time
+        reranking_duration.labels(reranker_type=reranker_type, status=status).observe(duration)
+        reranking_requests_total.labels(reranker_type=reranker_type, status=status).inc()
+        logger.debug(
+            "reranking_metrics_recorded",
+            reranker_type=reranker_type,
+            status=status,
+            duration_seconds=duration
+        )
