@@ -453,8 +453,8 @@ POST /api/v1/projects/{project_id}/query
 
 ### Parallel Agent Execution
 ```bash
-# Create 4 git worktrees
-WORKTREE_BASE="../knowledgebeast-phase2"
+# Create 4 git worktrees (inside project, not external)
+WORKTREE_BASE=".worktrees/phase2"
 
 git worktree add "${WORKTREE_BASE}/reranking" -b feature/reranking
 git worktree add "${WORKTREE_BASE}/chunking" -b feature/advanced-chunking
@@ -661,9 +661,9 @@ apt-get install tesseract-ocr  # Ubuntu
 # .claude/launch_phase2_agents.sh
 #!/bin/bash
 REPO_ROOT=$(git rev-parse --show-toplevel)
-WORKTREE_BASE="${REPO_ROOT}/../knowledgebeast-phase2"
+WORKTREE_BASE="${REPO_ROOT}/.worktrees/phase2"
 
-# Create worktrees
+# Create worktrees (inside project, not external)
 git worktree add "${WORKTREE_BASE}/reranking" -b feature/reranking
 git worktree add "${WORKTREE_BASE}/chunking" -b feature/advanced-chunking
 git worktree add "${WORKTREE_BASE}/multimodal" -b feature/multimodal-support
