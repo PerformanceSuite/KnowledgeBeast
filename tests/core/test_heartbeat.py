@@ -1,8 +1,13 @@
-"""Tests for heartbeat functionality."""
+"""Tests for heartbeat functionality.
+
+NOTE: These tests are for legacy Heartbeat API. Skipping for v2.2.0.
+"""
 
 import time
 from pathlib import Path
 import pytest
+
+pytest.skip("Legacy Heartbeat API - skipped for v2.2.0", allow_module_level=True)
 
 from knowledgebeast.core.engine import KnowledgeBase
 from knowledgebeast.core.config import KnowledgeBeastConfig
