@@ -1174,3 +1174,163 @@ class MultiModalQueryRequest(BaseModel):
         if not v:
             raise ValueError("Query cannot be empty or only whitespace")
         return v
+
+
+# ============================================================================
+# Project API Key Management Models (v2 Security)
+# ============================================================================
+
+class APIKeyCreate(BaseModel):
+    """Request model for creating a project API key."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "name": "Mobile App Key",
+                "scopes": ["read"],
+                "expires_days": 90
+            }
+        }
+    )
+
+    name: str = Field(
+        ...,
+        description="Human-readable key name",
+        min_length=1,
+        max_length=100
+    )
+    scopes: List[str] = Field(
+        default=["read", "write"],
+        description="Permission scopes: read, write, admin"
+    )
+    expires_days: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=365,
+        description="Key expiration in days (None = never expires)"
+    )
+
+    @field_validator('name')
+    @classmethod
+    def sanitize_key_name(cls, v: str) -> str:
+        """Sanitize key name."""
+        v = v.strip()
+        if not v:
+            raise ValueError("Key name cannot be empty or only whitespace")
+        return v
+
+    @field_validator('scopes')
+    @classmethod
+    def validate_scopes(cls, v: List[str]) -> List[str]:
+        """Validate permission scopes."""
+        valid_scopes = {"read", "write", "admin"}
+        invalid_scopes = set(v) - valid_scopes
+        if invalid_scopes:
+            raise ValueError(
+                f"Invalid scopes: {invalid_scopes}. "
+                f"Valid scopes: {valid_scopes}"
+            )
+        if not v:
+            raise ValueError("At least one scope is required")
+        return v
+
+
+class APIKeyResponse(BaseModel):
+    """Response model for API key creation (includes raw key ONCE)."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "key_id": "key_abc123xyz",
+                "api_key": "kb_vL9x2K8pQ7mR4nS6tU0wY1zA3bC5dE7fG9h",
+                "project_id": "proj_123",
+                "name": "Mobile App Key",
+                "scopes": ["read"],
+                "created_at": "2025-10-09T12:00:00",
+                "expires_at": "2026-01-09T12:00:00"
+            }
+        }
+    )
+
+    key_id: str = Field(..., description="Unique key identifier (for revocation)")
+    api_key: str = Field(..., description="Raw API key (ONLY shown once!)")
+    project_id: str = Field(..., description="Project this key grants access to")
+    name: str = Field(..., description="Key name")
+    scopes: List[str] = Field(..., description="Permission scopes")
+    created_at: str = Field(..., description="Creation timestamp")
+    expires_at: Optional[str] = Field(None, description="Expiration timestamp")
+
+
+class APIKeyInfo(BaseModel):
+    """Model for API key metadata (NO raw key included)."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "key_id": "key_abc123xyz",
+                "name": "Mobile App Key",
+                "scopes": ["read"],
+                "created_at": "2025-10-09T12:00:00",
+                "expires_at": "2026-01-09T12:00:00",
+                "revoked": False,
+                "last_used_at": "2025-10-09T14:30:00",
+                "created_by": "admin@example.com"
+            }
+        }
+    )
+
+    key_id: str = Field(..., description="Unique key identifier")
+    name: str = Field(..., description="Key name")
+    scopes: List[str] = Field(..., description="Permission scopes")
+    created_at: str = Field(..., description="Creation timestamp")
+    expires_at: Optional[str] = Field(None, description="Expiration timestamp")
+    revoked: bool = Field(..., description="Whether key is revoked")
+    last_used_at: Optional[str] = Field(None, description="Last usage timestamp")
+    created_by: Optional[str] = Field(None, description="Creator username/email")
+
+
+class APIKeyListResponse(BaseModel):
+    """Response model for listing project API keys."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "project_id": "proj_123",
+                "api_keys": [
+                    {
+                        "key_id": "key_abc123",
+                        "name": "Mobile App",
+                        "scopes": ["read"],
+                        "created_at": "2025-10-09T12:00:00",
+                        "expires_at": None,
+                        "revoked": False,
+                        "last_used_at": "2025-10-09T14:30:00",
+                        "created_by": "admin@example.com"
+                    }
+                ],
+                "count": 1
+            }
+        }
+    )
+
+    project_id: str = Field(..., description="Project identifier")
+    api_keys: List[APIKeyInfo] = Field(..., description="List of API keys")
+    count: int = Field(..., description="Number of keys")
+
+
+class APIKeyRevokeResponse(BaseModel):
+    """Response model for API key revocation."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "success": True,
+                "key_id": "key_abc123",
+                "message": "API key revoked successfully"
+            }
+        }
+    )
+
+    success: bool = Field(..., description="Whether revocation succeeded")
+    key_id: str = Field(..., description="Revoked key ID")
+    message: str = Field(..., description="Status message")

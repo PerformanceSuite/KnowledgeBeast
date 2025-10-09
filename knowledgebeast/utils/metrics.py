@@ -19,6 +19,15 @@ from knowledgebeast.utils.observability import (
     chromadb_collection_size,
     embedding_cache_hits,
     embedding_cache_misses,
+    project_api_key_validations_total,
+    project_api_keys_active,
+    project_cache_hits_total,
+    project_cache_misses_total,
+    project_documents_total,
+    project_errors_total,
+    project_ingests_total,
+    project_queries_total,
+    project_query_duration,
     query_duration,
     query_expansion_duration,
     query_expansions_total,
@@ -329,3 +338,156 @@ def measure_reranking(reranker_type: str) -> Generator[None, None, None]:
             status=status,
             duration_seconds=duration
         )
+
+
+# ============================================================================
+# Per-Project Metrics Helpers (v2.3.0)
+# ============================================================================
+
+
+def record_project_query(project_id: str, status: str, duration: float) -> None:
+    """Record project-scoped query metrics.
+
+    Args:
+        project_id: Project identifier
+        status: Query status ("success" or "error")
+        duration: Query duration in seconds
+
+    Example:
+        start = time.time()
+        try:
+            results = query_project(project_id, query)
+            record_project_query(project_id, "success", time.time() - start)
+        except Exception:
+            record_project_query(project_id, "error", time.time() - start)
+            raise
+    """
+    project_queries_total.labels(project_id=project_id, status=status).inc()
+    project_query_duration.labels(project_id=project_id).observe(duration)
+    logger.debug(
+        "project_query_metrics_recorded",
+        project_id=project_id,
+        status=status,
+        duration_seconds=duration
+    )
+
+
+@contextmanager
+def measure_project_query(project_id: str) -> Generator[None, None, None]:
+    """Context manager to measure and record project query operations.
+
+    Args:
+        project_id: Project identifier
+
+    Example:
+        with measure_project_query("proj_123"):
+            results = collection.query(query_text=query)
+    """
+    start_time = time.time()
+    status = "success"
+    try:
+        yield
+    except Exception:
+        status = "error"
+        raise
+    finally:
+        duration = time.time() - start_time
+        record_project_query(project_id, status, duration)
+
+
+def record_project_cache_hit(project_id: str) -> None:
+    """Record project cache hit.
+
+    Args:
+        project_id: Project identifier
+    """
+    project_cache_hits_total.labels(project_id=project_id).inc()
+    logger.debug("project_cache_hit_recorded", project_id=project_id)
+
+
+def record_project_cache_miss(project_id: str) -> None:
+    """Record project cache miss.
+
+    Args:
+        project_id: Project identifier
+    """
+    project_cache_misses_total.labels(project_id=project_id).inc()
+    logger.debug("project_cache_miss_recorded", project_id=project_id)
+
+
+def record_project_ingest(project_id: str, status: str) -> None:
+    """Record project document ingestion.
+
+    Args:
+        project_id: Project identifier
+        status: Ingest status ("success" or "error")
+    """
+    project_ingests_total.labels(project_id=project_id, status=status).inc()
+    logger.debug(
+        "project_ingest_metrics_recorded",
+        project_id=project_id,
+        status=status
+    )
+
+
+def record_project_error(project_id: str, error_type: str) -> None:
+    """Record project error.
+
+    Args:
+        project_id: Project identifier
+        error_type: Type of error (e.g., "ValidationError", "NotFoundError")
+    """
+    project_errors_total.labels(project_id=project_id, error_type=error_type).inc()
+    logger.debug(
+        "project_error_recorded",
+        project_id=project_id,
+        error_type=error_type
+    )
+
+
+def update_project_document_count(project_id: str, count: int) -> None:
+    """Update project document count gauge.
+
+    Args:
+        project_id: Project identifier
+        count: Total number of documents in project
+    """
+    project_documents_total.labels(project_id=project_id).set(count)
+    logger.debug(
+        "project_document_count_updated",
+        project_id=project_id,
+        count=count
+    )
+
+
+def record_project_api_key_validation(project_id: str, result: str) -> None:
+    """Record project API key validation attempt.
+
+    Args:
+        project_id: Project identifier
+        result: Validation result ("success" or "failure")
+    """
+    project_api_key_validations_total.labels(
+        project_id=project_id,
+        result=result
+    ).inc()
+    logger.debug(
+        "project_api_key_validation_recorded",
+        project_id=project_id,
+        result=result
+    )
+
+
+def update_project_active_api_keys(project_id: str, count: int) -> None:
+    """Update number of active API keys for project.
+
+    Args:
+        project_id: Project identifier
+        count: Number of active (non-revoked) API keys
+    """
+    project_api_keys_active.labels(project_id=project_id).set(count)
+    logger.debug(
+        "project_active_api_keys_updated",
+        project_id=project_id,
+        count=count
+    )

@@ -16,22 +16,25 @@ Provides 12 production-ready endpoints:
 """
 
 import asyncio
-import json
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, AsyncGenerator, Dict, Any
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 from knowledgebeast import __version__
 from knowledgebeast.api.auth import get_api_key
 from knowledgebeast.api.models import (
+    APIKeyCreate,
+    APIKeyInfo,
+    APIKeyListResponse,
+    APIKeyResponse,
+    APIKeyRevokeResponse,
     BatchIngestRequest,
     BatchIngestResponse,
     CacheClearResponse,
@@ -50,9 +53,6 @@ from knowledgebeast.api.models import (
     PaginationMetadata,
     ProjectCreate,
     ProjectDeleteResponse,
-    ProjectExportResponse,
-    ProjectImportRequest,
-    ProjectImportResponse,
     ProjectIngestRequest,
     ProjectListResponse,
     ProjectQueryRequest,
@@ -69,7 +69,13 @@ from knowledgebeast.core.config import KnowledgeBeastConfig
 from knowledgebeast.core.engine import KnowledgeBase
 from knowledgebeast.core.heartbeat import KnowledgeBaseHeartbeat
 from knowledgebeast.core.project_manager import ProjectManager
-from knowledgebeast.monitoring.health import ProjectHealthMonitor
+from knowledgebeast.utils.metrics import (
+    measure_project_query,
+    record_project_cache_hit,
+    record_project_cache_miss,
+    record_project_error,
+    record_project_ingest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +108,6 @@ def get_executor() -> ThreadPoolExecutor:
 _kb_instance: Optional[KnowledgeBase] = None
 _heartbeat_instance: Optional[KnowledgeBaseHeartbeat] = None
 _project_manager_instance: Optional[ProjectManager] = None
-_health_monitor_instance: Optional[ProjectHealthMonitor] = None
 
 
 def get_kb_instance() -> KnowledgeBase:
@@ -169,33 +174,6 @@ def get_project_manager() -> ProjectManager:
             )
 
     return _project_manager_instance
-
-
-def get_health_monitor() -> ProjectHealthMonitor:
-    """Get or create the singleton ProjectHealthMonitor instance.
-
-    Returns:
-        ProjectHealthMonitor instance
-
-    Raises:
-        HTTPException: If initialization fails
-    """
-    global _health_monitor_instance
-
-    if _health_monitor_instance is None:
-        try:
-            logger.info("Initializing ProjectHealthMonitor instance...")
-            pm = get_project_manager()
-            _health_monitor_instance = ProjectHealthMonitor(pm)
-            logger.info("ProjectHealthMonitor initialized successfully")
-        except Exception as e:
-            logger.error(f"Failed to initialize ProjectHealthMonitor: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to initialize health monitor: {str(e)}",
-            )
-
-    return _health_monitor_instance
 
 
 def cleanup_heartbeat() -> None:
@@ -1011,15 +989,23 @@ async def create_project(
             project_data.metadata
         )
 
+        # Record project creation metric
+        from knowledgebeast.utils.observability import project_creations_total
+        project_creations_total.inc()
+
         return ProjectResponse(**project.to_dict())
 
     except ValueError as e:
+        from knowledgebeast.utils.observability import project_errors_total
+        project_errors_total.labels(project_id="unknown", error_type="ValidationError").inc()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
     except Exception as e:
         logger.error(f"Create project error: {e}", exc_info=True)
+        from knowledgebeast.utils.observability import project_errors_total
+        project_errors_total.labels(project_id="unknown", error_type="CreateError").inc()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create project: {str(e)}"
@@ -1164,6 +1150,10 @@ async def update_project(
                 detail=f"Project not found: {project_id}"
             )
 
+        # Record project update
+        from knowledgebeast.utils.observability import project_updates_total
+        project_updates_total.inc()
+
         return ProjectResponse(**project.to_dict())
 
     except HTTPException:
@@ -1218,6 +1208,10 @@ async def delete_project(
                 detail=f"Project not found: {project_id}"
             )
 
+        # Record project deletion
+        from knowledgebeast.utils.observability import project_deletions_total
+        project_deletions_total.inc()
+
         return ProjectDeleteResponse(
             success=True,
             project_id=project_id,
@@ -1260,14 +1254,8 @@ async def project_query(
     Raises:
         HTTPException: If project not found or query fails
     """
-    # Track query timing and success for health monitoring
-    start_time = time.time()
-    success = False
-    cache_hit = False
-
     try:
         pm = get_project_manager()
-        health_monitor = get_health_monitor()
 
         # Verify project exists
         loop = asyncio.get_event_loop()
@@ -1285,9 +1273,8 @@ async def project_query(
 
         cached_results = cache.get(cache_key) if query_request.use_cache else None
         if cached_results is not None:
-            cache_hit = True
             logger.debug(f"Cache hit for project {project_id} query: {query_request.query}")
-            success = True
+            record_project_cache_hit(project_id)
             return QueryResponse(
                 results=cached_results,
                 count=len(cached_results),
@@ -1295,10 +1282,14 @@ async def project_query(
                 query=query_request.query
             )
 
+        # Record cache miss
+        record_project_cache_miss(project_id)
+
         # Get ChromaDB collection for this project
         collection = await loop.run_in_executor(get_executor(), pm.get_project_collection, project_id)
 
         if not collection:
+            record_project_error(project_id, "CollectionError")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to get collection for project: {project_id}"
@@ -1313,7 +1304,9 @@ async def project_query(
             )
             return result
 
-        chroma_results = await loop.run_in_executor(get_executor(), query_collection)
+        # Measure query duration
+        with measure_project_query(project_id):
+            chroma_results = await loop.run_in_executor(get_executor(), query_collection)
 
         # Convert ChromaDB results to QueryResult format
         query_results = []
@@ -1340,8 +1333,6 @@ async def project_query(
         if query_request.use_cache:
             cache.put(cache_key, query_results)
 
-        success = True
-
         return QueryResponse(
             results=query_results,
             count=len(query_results),
@@ -1353,18 +1344,11 @@ async def project_query(
         raise
     except Exception as e:
         logger.error(f"Project query error: {e}", exc_info=True)
+        record_project_error(project_id, "QueryError")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to query project: {str(e)}"
         )
-    finally:
-        # Record health metrics
-        latency_ms = (time.time() - start_time) * 1000
-        try:
-            health_monitor = get_health_monitor()
-            health_monitor.record_query(project_id, latency_ms, success, cache_hit)
-        except Exception as e:
-            logger.warning(f"Failed to record health metrics: {e}")
 
 
 @router_v2.post(
@@ -1469,6 +1453,8 @@ async def project_ingest(
 
         await loop.run_in_executor(get_executor(), add_to_collection)
 
+        # Record successful ingestion
+        record_project_ingest(project_id, "success")
         logger.info(f"Ingested document into project {project_id}: {doc_id}")
 
         return IngestResponse(
@@ -1482,6 +1468,8 @@ async def project_ingest(
         raise
     except Exception as e:
         logger.error(f"Project ingest error: {e}", exc_info=True)
+        record_project_ingest(project_id, "error")
+        record_project_error(project_id, "IngestError")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to ingest into project: {str(e)}"
@@ -1489,39 +1477,40 @@ async def project_ingest(
 
 
 # ============================================================================
-# Project Export/Import Endpoints (API v2)
+# Project API Key Management Endpoints (v2 Security)
 # ============================================================================
 
 
 @router_v2.post(
-    "/{project_id}/export",
-    response_model=ProjectExportResponse,
-    tags=["projects"],
-    summary="Export project",
-    description="Export project as ZIP archive with all data and embeddings",
+    "/{project_id}/api-keys",
+    response_model=APIKeyResponse,
+    tags=["projects", "security"],
+    summary="Create project API key",
+    description="Generate a new API key for project-scoped access",
+    status_code=201
 )
-@limiter.limit("5/minute")
-async def export_project_endpoint(
+@limiter.limit("10/minute")
+async def create_project_api_key(
     request: Request,
     project_id: str,
+    key_data: APIKeyCreate,
     api_key: str = Depends(get_api_key)
-) -> ProjectExportResponse:
-    """Export a project to a ZIP file.
-
-    The export includes:
-    - Project metadata (name, description, config)
-    - All documents and their metadata
-    - All embeddings (compressed)
-    - Manifest with version and export info
+) -> APIKeyResponse:
+    """Create a new API key for a project.
 
     Args:
         project_id: Project identifier
+        key_data: API key creation parameters
 
     Returns:
-        Export response with file path and stats
+        Created API key (raw key shown ONLY here!)
 
     Raises:
-        HTTPException: If project not found or export fails
+        HTTPException: If project not found or key creation fails
+
+    Note:
+        The raw API key is returned only once in the response.
+        Store it securely - it cannot be retrieved again.
     """
     try:
         pm = get_project_manager()
@@ -1536,224 +1525,26 @@ async def export_project_endpoint(
                 detail=f"Project not found: {project_id}"
             )
 
-        # Execute export in thread pool (can be slow for large projects)
-        logger.info(f"Starting export for project {project_id}")
-        export_path = await loop.run_in_executor(
+        # Create API key
+        from knowledgebeast.api.project_auth_middleware import get_auth_manager
+        auth_manager = get_auth_manager()
+
+        key_info = await loop.run_in_executor(
             get_executor(),
-            pm.export_project,
-            project_id
+            auth_manager.create_api_key,
+            project_id,
+            key_data.name,
+            key_data.scopes,
+            key_data.expires_days,
+            None  # created_by (could extract from global API key if needed)
         )
-
-        # Get file size
-        file_size = Path(export_path).stat().st_size
-
-        # Get document count
-        collection = pm.get_project_collection(project_id)
-        doc_count = collection.count() if collection else 0
-
-        logger.info(f"Export completed: {export_path} ({file_size} bytes)")
-
-        return ProjectExportResponse(
-            success=True,
-            project_id=project_id,
-            export_path=export_path,
-            document_count=doc_count,
-            file_size_bytes=file_size,
-            message=f"Project '{project.name}' exported successfully"
-        )
-
-    except HTTPException:
-        raise
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-    except IOError as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Export failed: {str(e)}"
-        )
-    except Exception as e:
-        logger.error(f"Project export error: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to export project: {str(e)}"
-        )
-
-
-# ============================================================================
-# Project Health Monitoring Endpoints (API v2)
-# ============================================================================
-
-
-@router_v2.get(
-    "/{project_id}/health",
-    tags=["projects", "health"],
-    summary="Get project health status",
-    description="Get comprehensive health metrics and alerts for a specific project",
-)
-@limiter.limit("60/minute")
-async def get_project_health_endpoint(
-    request: Request,
-    project_id: str,
-    api_key: str = Depends(get_api_key)
-) -> Dict[str, Any]:
-    """Get health status for a specific project.
-
-    Returns:
-        Health status with metrics and alerts
-    """
-    try:
-        health_monitor = get_health_monitor()
-
-        # Get health status in thread pool
-        loop = asyncio.get_event_loop()
-        health = await loop.run_in_executor(
-            get_executor(),
-            health_monitor.get_project_health,
-            project_id
-        )
-
-        return health
-
-    except Exception as e:
-        logger.error(f"Project health error: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get project health: {str(e)}"
-        )
-
-
-@router_v2.get(
-    "/health",
-    tags=["projects", "health"],
-    summary="Get all projects health status",
-    description="Get health status summary for all projects",
-)
-@limiter.limit("30/minute")
-async def get_all_projects_health_endpoint(
-    request: Request,
-    api_key: str = Depends(get_api_key)
-) -> Dict[str, Any]:
-    """Get health status for all projects.
-
-    Returns:
-        Summary and per-project health statuses
-    """
-    try:
-        health_monitor = get_health_monitor()
-
-        # Get all health statuses in thread pool
-        loop = asyncio.get_event_loop()
-        health = await loop.run_in_executor(
-            get_executor(),
-            health_monitor.get_all_projects_health
-        )
-
-        return health
-
-    except Exception as e:
-        logger.error(f"All projects health error: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get all projects health: {str(e)}"
-        )
-
-
-@router_v2.post(
-    "/import",
-    response_model=ProjectImportResponse,
-    tags=["projects"],
-    summary="Import project",
-    description="Import project from ZIP archive",
-    status_code=201
-)
-@limiter.limit("5/minute")
-async def import_project_endpoint(
-    request: Request,
-    file: UploadFile,
-    import_params: Optional[ProjectImportRequest] = None,
-    api_key: str = Depends(get_api_key)
-) -> ProjectImportResponse:
-    """Import a project from a ZIP file.
-
-    Upload a ZIP file exported from another KnowledgeBeast instance.
-    All documents, embeddings, and metadata will be restored.
-
-    Args:
-        file: Uploaded ZIP file
-        import_params: Optional import parameters (new name, overwrite)
-
-    Returns:
-        Import response with project details
-
-    Raises:
-        HTTPException: If import fails or invalid ZIP
-    """
-    import tempfile
-    import os
-
-    tmp_path = None
-    try:
-        pm = get_project_manager()
-
-        # Validate file is a ZIP
-        if not file.filename.endswith('.zip'):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="File must be a ZIP archive"
-            )
-
-        # Save uploaded file temporarily
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp:
-            content = await file.read()
-            tmp.write(content)
-            tmp_path = tmp.name
-
-        logger.info(f"Received import file: {file.filename} ({len(content)} bytes)")
-
-        # Parse import parameters
-        new_name = None
-        overwrite = False
-        if import_params:
-            new_name = import_params.new_name
-            overwrite = import_params.overwrite
-
-        # Execute import in thread pool (can be slow for large projects)
-        loop = asyncio.get_event_loop()
-        project_id = await loop.run_in_executor(
-            get_executor(),
-            pm.import_project,
-            tmp_path,
-            new_name,
-            overwrite
-        )
-
-        # Get imported project details
-        project = await loop.run_in_executor(get_executor(), pm.get_project, project_id)
-        if not project:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Project imported but could not retrieve details"
-            )
-
-        # Get document count
-        collection = pm.get_project_collection(project_id)
-        doc_count = collection.count() if collection else 0
 
         logger.info(
-            f"Import completed: project_id={project_id}, "
-            f"name={project.name}, docs={doc_count}"
+            f"Created API key for project {project_id}: "
+            f"{key_info['name']} (scopes: {key_info['scopes']})"
         )
 
-        return ProjectImportResponse(
-            success=True,
-            project_id=project_id,
-            project_name=project.name,
-            document_count=doc_count,
-            message=f"Project '{project.name}' imported successfully"
-        )
+        return APIKeyResponse(**key_info)
 
     except HTTPException:
         raise
@@ -1762,162 +1553,157 @@ async def import_project_endpoint(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
-    except IOError as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Import failed: {str(e)}"
-        )
     except Exception as e:
-        logger.error(f"Project import error: {e}", exc_info=True)
+        logger.error(f"Create API key error: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to import project: {str(e)}"
+            detail=f"Failed to create API key: {str(e)}"
         )
-    finally:
-        # Clean up temporary file
-        if tmp_path and os.path.exists(tmp_path):
-            try:
-                os.unlink(tmp_path)
-                logger.debug(f"Cleaned up temporary import file: {tmp_path}")
-            except Exception as e:
-                logger.warning(f"Failed to clean up temporary file: {e}")
 
 
-# ============================================================================
-# Project Query Streaming Endpoints (API v2)
-# ============================================================================
-
-
-@router_v2.post(
-    "/{project_id}/query/stream",
-    tags=["projects", "query"],
-    summary="Stream query results",
-    description="Stream query results using Server-Sent Events for large result sets",
+@router_v2.get(
+    "/{project_id}/api-keys",
+    response_model=APIKeyListResponse,
+    tags=["projects", "security"],
+    summary="List project API keys",
+    description="Get all API keys for a project (no raw keys included)"
 )
-@limiter.limit("20/minute")
-async def project_query_stream(
+@limiter.limit("60/minute")
+async def list_project_api_keys(
     request: Request,
     project_id: str,
-    query_request: ProjectQueryRequest,
     api_key: str = Depends(get_api_key)
-) -> StreamingResponse:
-    """Stream query results using Server-Sent Events.
+) -> APIKeyListResponse:
+    """List all API keys for a project.
 
     Args:
         project_id: Project identifier
-        query_request: Query request
 
     Returns:
-        StreamingResponse with Server-Sent Events
+        List of API key metadata (no raw keys)
 
     Raises:
-        HTTPException: If project not found or query fails
+        HTTPException: If project not found
+
+    Note:
+        Raw API keys are never included in this response.
+        Only metadata like name, scopes, and usage timestamps.
     """
-    pm = get_project_manager()
+    try:
+        pm = get_project_manager()
 
-    # Verify project exists
-    loop = asyncio.get_event_loop()
-    project = await loop.run_in_executor(get_executor(), pm.get_project, project_id)
+        # Verify project exists
+        loop = asyncio.get_event_loop()
+        project = await loop.run_in_executor(get_executor(), pm.get_project, project_id)
 
-    if not project:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Project not found: {project_id}"
-        )
-
-    async def generate_results() -> AsyncGenerator[str, None]:
-        """Generate Server-Sent Events for query results."""
-        try:
-            # Send start event
-            start_event = {
-                "event": "start",
-                "timestamp": datetime.utcnow().isoformat(),
-                "project_id": project_id,
-                "query": query_request.query
-            }
-            yield f"data: {json.dumps(start_event)}\n\n"
-
-            # Get ChromaDB collection
-            collection = await loop.run_in_executor(
-                get_executor(),
-                pm.get_project_collection,
-                project_id
+        if not project:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project not found: {project_id}"
             )
 
-            if not collection:
-                error_event = {
-                    "event": "error",
-                    "error": "Failed to get collection",
-                    "type": "CollectionError"
-                }
-                yield f"data: {json.dumps(error_event)}\n\n"
-                return
+        # List API keys
+        from knowledgebeast.api.project_auth_middleware import get_auth_manager
+        auth_manager = get_auth_manager()
 
-            # Query ChromaDB in batches and stream results
-            batch_size = 10
-            total_requested = min(query_request.limit, 100)  # Cap at 100
-            results_sent = 0
+        keys = await loop.run_in_executor(
+            get_executor(),
+            auth_manager.list_project_keys,
+            project_id
+        )
 
-            # Execute query to get all results
-            def query_collection():
-                return collection.query(
-                    query_texts=[query_request.query],
-                    n_results=total_requested
-                )
+        # Convert to APIKeyInfo models
+        from knowledgebeast.api.models import APIKeyInfo
+        api_keys = [APIKeyInfo(**key_data) for key_data in keys]
 
-            chroma_results = await loop.run_in_executor(get_executor(), query_collection)
+        return APIKeyListResponse(
+            project_id=project_id,
+            api_keys=api_keys,
+            count=len(api_keys)
+        )
 
-            # Extract results
-            ids = chroma_results.get('ids', [[]])[0]
-            documents = chroma_results.get('documents', [[]])[0]
-            metadatas = chroma_results.get('metadatas', [[]])[0]
-            distances = chroma_results.get('distances', [[]])[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"List API keys error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list API keys: {str(e)}"
+        )
 
-            # Stream each result
-            for i, doc_id in enumerate(ids):
-                content = documents[i] if i < len(documents) else ""
-                metadata = metadatas[i] if i < len(metadatas) else {}
-                distance = distances[i] if i < len(distances) else 0
 
-                result_obj = {
-                    "event": "result",
-                    "data": {
-                        "id": doc_id,
-                        "document": content,
-                        "metadata": metadata,
-                        "score": 1 / (1 + distance),  # Convert distance to score
-                        "index": i
-                    }
-                }
-                yield f"data: {json.dumps(result_obj)}\n\n"
-                results_sent += 1
+@router_v2.delete(
+    "/{project_id}/api-keys/{key_id}",
+    response_model=APIKeyRevokeResponse,
+    tags=["projects", "security"],
+    summary="Revoke project API key",
+    description="Revoke an API key to immediately disable access"
+)
+@limiter.limit("20/minute")
+async def revoke_project_api_key(
+    request: Request,
+    project_id: str,
+    key_id: str,
+    api_key: str = Depends(get_api_key)
+) -> APIKeyRevokeResponse:
+    """Revoke a project API key.
 
-                # Small delay to simulate streaming (optional)
-                await asyncio.sleep(0.01)
+    Args:
+        project_id: Project identifier
+        key_id: API key ID to revoke
 
-            # Send completion event
-            done_event = {
-                "event": "done",
-                "total_results": results_sent,
-                "timestamp": datetime.utcnow().isoformat()
-            }
-            yield f"data: {json.dumps(done_event)}\n\n"
+    Returns:
+        Revocation status
 
-        except Exception as e:
-            logger.error(f"Streaming error: {e}", exc_info=True)
-            error_obj = {
-                "event": "error",
-                "error": str(e),
-                "type": type(e).__name__
-            }
-            yield f"data: {json.dumps(error_obj)}\n\n"
+    Raises:
+        HTTPException: If project or key not found
 
-    return StreamingResponse(
-        generate_results(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",  # Disable nginx buffering
-        }
-    )
+    Note:
+        Revoked keys are soft-deleted (audit trail preserved).
+        The key will be immediately invalid for all requests.
+    """
+    try:
+        pm = get_project_manager()
+
+        # Verify project exists
+        loop = asyncio.get_event_loop()
+        project = await loop.run_in_executor(get_executor(), pm.get_project, project_id)
+
+        if not project:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project not found: {project_id}"
+            )
+
+        # Revoke API key
+        from knowledgebeast.api.project_auth_middleware import get_auth_manager
+        auth_manager = get_auth_manager()
+
+        success = await loop.run_in_executor(
+            get_executor(),
+            auth_manager.revoke_api_key,
+            key_id
+        )
+
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"API key not found: {key_id}"
+            )
+
+        logger.info(f"Revoked API key {key_id} for project {project_id}")
+
+        return APIKeyRevokeResponse(
+            success=True,
+            key_id=key_id,
+            message=f"API key {key_id} revoked successfully"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Revoke API key error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to revoke API key: {str(e)}"
+        )
