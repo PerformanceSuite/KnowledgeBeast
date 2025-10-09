@@ -21,10 +21,7 @@ import numpy as np
 from chromadb.config import Settings
 from chromadb.utils import embedding_functions
 
-from knowledgebeast.core.circuit_breaker import CircuitBreaker, CircuitBreakerError
-from knowledgebeast.core.retry_logic import chromadb_retry
-
-logger = logging.getLogger(__name__)
+from knowledgebeast.utils.observability import get_tracer
 
 
 class VectorStore:
@@ -296,34 +293,44 @@ class VectorStore:
         Raises:
             CircuitBreakerError: If circuit breaker is open
         """
-        # Normalize query embeddings
-        if isinstance(query_embeddings, np.ndarray) and query_embeddings.ndim == 1:
-            query_embeddings = [query_embeddings]
+        tracer = get_tracer()
+        with tracer.start_as_current_span("vector_store.query") as span:
+            # Normalize query embeddings
+            if isinstance(query_embeddings, np.ndarray) and query_embeddings.ndim == 1:
+                query_embeddings = [query_embeddings]
 
-        # Convert numpy arrays to lists
-        query_list = [
-            emb.tolist() if isinstance(emb, np.ndarray) else emb
-            for emb in query_embeddings
-        ]
+            # Add span attributes
+            span.set_attribute("vector_store.collection", self.collection_name)
+            span.set_attribute("vector_store.n_results", n_results)
+            span.set_attribute("vector_store.num_queries", len(query_embeddings))
+            span.set_attribute("vector_store.has_where_filter", where is not None)
+            span.set_attribute("vector_store.has_document_filter", where_document is not None)
 
-        # Default includes
-        if include is None:
-            include = ["distances", "metadatas", "documents"]
+            # Convert numpy arrays to lists
+            query_list = [
+                emb.tolist() if isinstance(emb, np.ndarray) else emb
+                for emb in query_embeddings
+            ]
 
-        # Execute query with circuit breaker and retry protection
-        @chromadb_retry(max_attempts=3, initial_wait=1.0, max_wait=10.0)
-        def execute_query():
+            # Default includes
+            if include is None:
+                include = ["distances", "metadatas", "documents"]
+
             with self._lock:
                 self.stats["total_queries"] += 1
-            return self.collection.query(
-                query_embeddings=query_list,
-                n_results=n_results,
-                where=where,
-                where_document=where_document,
-                include=include,
-            )
+                results = self.collection.query(
+                    query_embeddings=query_list,
+                    n_results=n_results,
+                    where=where,
+                    where_document=where_document,
+                    include=include,
+                )
 
-        return self._execute_with_protection(execute_query)
+            # Add result statistics to span
+            if results and "ids" in results:
+                span.set_attribute("vector_store.results_returned", len(results["ids"][0]))
+
+            return results
 
     def get(
         self,
