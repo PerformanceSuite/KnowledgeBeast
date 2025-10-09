@@ -19,7 +19,7 @@ import time
 
 from knowledgebeast.mcp.config import MCPConfig
 from knowledgebeast.mcp.tools import KnowledgeBeastTools
-from knowledgebeast.core.models import Project
+from knowledgebeast.core.project_manager import Project
 
 
 @pytest.fixture

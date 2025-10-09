@@ -619,7 +619,7 @@ async def test_special_characters_in_content(integration_tools: KnowledgeBeastTo
         "Document with émojis: 🚀 🎉 💡 and accents: café, naïve",
         "Math symbols: α, β, γ, ∑, ∫, ∂, ℝ, ℂ",
         "Code: def func(): return {'key': 'value'}",
-        "Quotes: "smart quotes" 'single' «guillemets»",
+        "Quotes: \"smart quotes\" 'single' «guillemets»",
         "Mixed: 中文字符 with English text and 日本語",
     ]
 

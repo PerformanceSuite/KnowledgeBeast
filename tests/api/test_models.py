@@ -486,7 +486,11 @@ class TestQueryResult:
             "content": "content",
             "name": "name",
             "path": "/path",
-            "kb_dir": "/kb"
+            "kb_dir": "/kb",
+            "vector_score": None,
+            "rerank_score": None,
+            "final_score": None,
+            "rank": None
         }
 
 
