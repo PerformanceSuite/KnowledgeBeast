@@ -377,27 +377,169 @@ async def root() -> dict:
 
 @app.get("/health", tags=["health"])
 async def health() -> dict:
-    """Health check endpoint.
+    """Enhanced health check endpoint with dependency monitoring.
+
+    Checks:
+    - ChromaDB connectivity (ping with timeout)
+    - Embedding model loaded (verify in memory)
+    - SQLite database accessible (repository check)
+    - Disk space available (>1GB = healthy)
+    - Circuit breaker status
 
     Returns:
-        Health status and system information
+        Health status with component-level details and aggregated status
     """
+    import os
+    import shutil
+    from pathlib import Path
+
+    # Component health tracking
+    components = {}
+    overall_status = "healthy"
+
+    # 1. Check Knowledge Base initialization
     try:
         kb = get_kb_instance()
-        kb_status = "initialized" if kb else "not_initialized"
-        stats = kb.get_stats() if kb else {}
+        if kb:
+            components["knowledgebase"] = {
+                "status": "up",
+                "initialized": True
+            }
+        else:
+            components["knowledgebase"] = {
+                "status": "down",
+                "initialized": False
+            }
+            overall_status = "unhealthy"
     except Exception as e:
-        logger.error(f"Error getting KB status: {e}")
-        kb_status = "error"
-        stats = {}
+        logger.error(f"Error checking KB status: {e}")
+        components["knowledgebase"] = {
+            "status": "down",
+            "error": str(e)
+        }
+        overall_status = "unhealthy"
 
-    return {
-        "status": "healthy",
+    # 2. Check ChromaDB connectivity (if KB exists)
+    if kb:
+        try:
+            import time
+            start_time = time.time()
+
+            # Check if KB has vector store with circuit breaker
+            if hasattr(kb, 'vector_store') and kb.vector_store:
+                health_check = kb.vector_store.get_health()
+                latency_ms = (time.time() - start_time) * 1000
+
+                components["chromadb"] = {
+                    "status": health_check.get("status", "unknown"),
+                    "available": health_check.get("chromadb_available", False),
+                    "circuit_breaker_state": health_check.get("circuit_breaker_state", "unknown"),
+                    "latency_ms": round(latency_ms, 2),
+                    "document_count": health_check.get("document_count", 0)
+                }
+
+                if health_check.get("status") == "unhealthy":
+                    overall_status = "unhealthy"
+                elif health_check.get("status") == "degraded":
+                    overall_status = "degraded" if overall_status == "healthy" else overall_status
+            else:
+                components["chromadb"] = {
+                    "status": "not_configured",
+                    "available": False
+                }
+        except Exception as e:
+            logger.error(f"Error checking ChromaDB: {e}")
+            components["chromadb"] = {
+                "status": "error",
+                "available": False,
+                "error": str(e)
+            }
+            overall_status = "degraded" if overall_status == "healthy" else overall_status
+
+    # 3. Check Embedding Model
+    if kb:
+        try:
+            # Check if hybrid engine exists with embedding model
+            if hasattr(kb, 'hybrid_engine') and kb.hybrid_engine:
+                model_name = getattr(kb.hybrid_engine.model, 'model_name_or_path', 'unknown')
+                components["embedding_model"] = {
+                    "status": "up",
+                    "model": model_name,
+                    "loaded": True
+                }
+            else:
+                components["embedding_model"] = {
+                    "status": "not_configured",
+                    "loaded": False
+                }
+        except Exception as e:
+            logger.error(f"Error checking embedding model: {e}")
+            components["embedding_model"] = {
+                "status": "error",
+                "error": str(e)
+            }
+
+    # 4. Check Database (repository)
+    if kb:
+        try:
+            stats = kb.get_stats()
+            doc_count = stats.get('documents', 0)
+            components["database"] = {
+                "status": "up",
+                "documents": doc_count,
+                "accessible": True
+            }
+        except Exception as e:
+            logger.error(f"Error checking database: {e}")
+            components["database"] = {
+                "status": "error",
+                "accessible": False,
+                "error": str(e)
+            }
+            overall_status = "unhealthy"
+
+    # 5. Check Disk Space
+    try:
+        # Check disk space for current directory
+        current_dir = Path.cwd()
+        stat = shutil.disk_usage(current_dir)
+        available_gb = stat.free / (1024 ** 3)
+
+        disk_status = "up" if available_gb > 1 else "warning"
+        if available_gb < 0.5:
+            disk_status = "critical"
+            overall_status = "unhealthy"
+        elif disk_status == "warning" and overall_status == "healthy":
+            overall_status = "degraded"
+
+        components["disk"] = {
+            "status": disk_status,
+            "available_gb": round(available_gb, 2),
+            "threshold_gb": 1.0
+        }
+    except Exception as e:
+        logger.error(f"Error checking disk space: {e}")
+        components["disk"] = {
+            "status": "error",
+            "error": str(e)
+        }
+
+    # Build comprehensive response
+    response = {
+        "status": overall_status,
         "version": __version__,
-        "kb_status": kb_status,
-        "kb_stats": stats,
+        "components": components,
         "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     }
+
+    # Add KB stats if available
+    if kb:
+        try:
+            response["kb_stats"] = kb.get_stats()
+        except Exception as e:
+            logger.error(f"Error getting KB stats: {e}")
+
+    return response
 
 
 if __name__ == "__main__":

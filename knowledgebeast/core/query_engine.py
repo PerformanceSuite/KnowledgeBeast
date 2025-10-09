@@ -3,6 +3,12 @@
 This module implements the query execution logic, including term matching,
 relevance ranking, and result formatting. It also includes hybrid search
 combining vector similarity and keyword matching.
+
+Features:
+- Graceful degradation when ChromaDB is unavailable
+- Automatic fallback to keyword search
+- Circuit breaker detection and handling
+- Cache-based fallback for resilience
 """
 
 import logging
@@ -14,6 +20,7 @@ from sentence_transformers import SentenceTransformer
 from knowledgebeast.core.repository import DocumentRepository
 from knowledgebeast.core.constants import ERR_EMPTY_SEARCH_TERMS
 from knowledgebeast.core.cache import LRUCache
+from knowledgebeast.core.circuit_breaker import CircuitBreakerError
 
 logger = logging.getLogger(__name__)
 
@@ -312,62 +319,88 @@ class HybridQueryEngine:
     def search_vector(
         self,
         query: str,
-        top_k: int = 10
-    ) -> List[Tuple[str, Dict, float]]:
-        """Pure vector similarity search using embeddings.
+        top_k: int = 10,
+        fallback_on_error: bool = True
+    ) -> Tuple[List[Tuple[str, Dict, float]], bool]:
+        """Pure vector similarity search using embeddings with graceful degradation.
 
         Args:
             query: Search query string
             top_k: Number of top results to return
+            fallback_on_error: Fallback to keyword search on error (default: True)
 
         Returns:
-            List of (doc_id, document, score) tuples sorted by similarity.
-            Returns empty list if query is empty.
+            Tuple of (results, degraded_mode) where:
+            - results: List of (doc_id, document, score) tuples sorted by similarity
+            - degraded_mode: True if fallback to keyword search was used
         """
         if not query or not query.strip():
-            return []
+            return [], False
 
-        # Get query embedding
-        query_embedding = self._get_embedding(query)
+        try:
+            # Get query embedding
+            query_embedding = self._get_embedding(query)
 
-        # Get all document IDs (repository handles locking)
-        with self.repository._lock:
-            doc_ids = list(self.repository.documents.keys())
+            # Get all document IDs (repository handles locking)
+            with self.repository._lock:
+                doc_ids = list(self.repository.documents.keys())
 
-        # Compute similarities (lock-free)
-        similarities = []
-        for doc_id in doc_ids:
-            # Get cached embedding, or compute on-the-fly if not cached
-            doc_embedding = self.embedding_cache.get(doc_id)
-            if doc_embedding is None:
-                # Embedding not cached - compute and cache it
-                doc = self.repository.get_document(doc_id)
-                if doc and 'content' in doc:
-                    doc_embedding = self._get_embedding(doc['content'])
-                    self.embedding_cache.put(doc_id, doc_embedding)
+            # Compute similarities (lock-free)
+            similarities = []
+            for doc_id in doc_ids:
+                # Get cached embedding, or compute on-the-fly if not cached
+                doc_embedding = self.embedding_cache.get(doc_id)
+                if doc_embedding is None:
+                    # Embedding not cached - compute and cache it
+                    doc = self.repository.get_document(doc_id)
+                    if doc and 'content' in doc:
+                        doc_embedding = self._get_embedding(doc['content'])
+                        self.embedding_cache.put(doc_id, doc_embedding)
 
-            if doc_embedding is not None:
-                similarity = self._cosine_similarity(query_embedding, doc_embedding)
-                similarities.append((doc_id, similarity))
+                if doc_embedding is not None:
+                    similarity = self._cosine_similarity(query_embedding, doc_embedding)
+                    similarities.append((doc_id, similarity))
 
-        # Sort by similarity (descending)
-        similarities.sort(key=lambda x: x[1], reverse=True)
+            # Sort by similarity (descending)
+            similarities.sort(key=lambda x: x[1], reverse=True)
 
-        # Get top-k results
-        top_results = similarities[:top_k]
+            # Get top-k results
+            top_results = similarities[:top_k]
 
-        # Retrieve documents (repository handles locking)
-        doc_ids_top = [doc_id for doc_id, _ in top_results]
-        documents = self.repository.get_documents_by_ids(doc_ids_top)
+            # Retrieve documents (repository handles locking)
+            doc_ids_top = [doc_id for doc_id, _ in top_results]
+            documents = self.repository.get_documents_by_ids(doc_ids_top)
 
-        # Combine with scores
-        results = [
-            (doc_id, doc, score)
-            for (doc_id, score), doc in zip(top_results, documents)
-        ]
+            # Combine with scores
+            results = [
+                (doc_id, doc, score)
+                for (doc_id, score), doc in zip(top_results, documents)
+            ]
 
-        logger.debug(f"Vector search for '{query[:50]}' returned {len(results)} results")
-        return results
+            logger.debug(f"Vector search for '{query[:50]}' returned {len(results)} results")
+            return results, False
+
+        except CircuitBreakerError as e:
+            logger.warning(f"Circuit breaker open for vector search: {e}")
+            if fallback_on_error:
+                logger.info("Falling back to keyword search (degraded mode)")
+                keyword_results = self.search_keyword(query)
+                return keyword_results, True
+            else:
+                return [], True
+
+        except Exception as e:
+            logger.error(f"Vector search failed: {e}", exc_info=True)
+            if fallback_on_error:
+                logger.info("Falling back to keyword search due to error (degraded mode)")
+                try:
+                    keyword_results = self.search_keyword(query)
+                    return keyword_results, True
+                except Exception as fallback_error:
+                    logger.error(f"Keyword fallback also failed: {fallback_error}")
+                    return [], True
+            else:
+                return [], True
 
     def search_keyword(
         self,
@@ -408,8 +441,8 @@ class HybridQueryEngine:
         query: str,
         alpha: Optional[float] = None,
         top_k: int = 10
-    ) -> List[Tuple[str, Dict, float]]:
-        """Hybrid search combining vector and keyword scores.
+    ) -> Tuple[List[Tuple[str, Dict, float]], bool]:
+        """Hybrid search combining vector and keyword scores with graceful degradation.
 
         Final score = alpha * vector_score + (1 - alpha) * keyword_score
 
@@ -419,21 +452,29 @@ class HybridQueryEngine:
             top_k: Number of top results to return
 
         Returns:
-            List of (doc_id, document, score) tuples sorted by combined score.
-            Returns empty list if query is empty.
+            Tuple of (results, degraded_mode) where:
+            - results: List of (doc_id, document, score) tuples sorted by combined score
+            - degraded_mode: True if vector search unavailable (keyword-only mode)
 
         Raises:
             ValueError: If alpha not in [0, 1]
         """
         if not query or not query.strip():
-            return []
+            return [], False
 
         alpha = alpha if alpha is not None else self.alpha
         if not 0 <= alpha <= 1:
             raise ValueError("alpha must be between 0 and 1")
 
-        # Get vector scores
-        vector_results = self.search_vector(query, top_k=top_k * 2)  # Get more for reranking
+        # Get vector scores with degradation awareness
+        vector_results, degraded = self.search_vector(query, top_k=top_k * 2, fallback_on_error=False)
+
+        if degraded:
+            # Vector search unavailable - use keyword-only (degraded mode)
+            logger.warning("Hybrid search degraded to keyword-only mode")
+            keyword_results = self.search_keyword(query)
+            return keyword_results[:top_k], True
+
         vector_scores = {doc_id: score for doc_id, _, score in vector_results}
 
         # Get keyword scores
@@ -464,7 +505,7 @@ class HybridQueryEngine:
         ]
 
         logger.debug(f"Hybrid search (alpha={alpha}) for '{query[:50]}' returned {len(results)} results")
-        return results
+        return results, False
 
     def search_with_mmr(
         self,
