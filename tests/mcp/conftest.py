@@ -38,6 +38,19 @@ class MCPConfig:
         self.server_name = server_name
         self.log_level = log_level
 
+    @classmethod
+    def from_env(cls):
+        """Create MCPConfig from environment variables."""
+        import os
+        return cls(
+            projects_db_path=os.getenv("KB_PROJECTS_DB", "./kb_projects.db"),
+            chroma_path=os.getenv("KB_CHROMA_PATH", "./chroma_db"),
+            default_embedding_model=os.getenv("KB_DEFAULT_MODEL", "all-MiniLM-L6-v2"),
+            cache_capacity=int(os.getenv("KB_CACHE_CAPACITY", "100")),
+            server_name=os.getenv("KB_SERVER_NAME", "knowledgebeast"),
+            log_level=os.getenv("KB_LOG_LEVEL", "INFO")
+        )
+
     def ensure_directories(self):
         """Ensure required directories exist."""
         from pathlib import Path
@@ -72,10 +85,11 @@ def mock_vector_store():
     """Mock VectorStore for instant ChromaDB operations.
 
     Simulates ChromaDB without actual I/O.
+    Each test gets a fresh instance to avoid test pollution.
     """
     mock = MagicMock()
     mock.collection_name = "test_collection"
-    mock._documents = {}  # In-memory document store
+    mock._documents = {}  # In-memory document store (fresh per test)
     mock._next_id = 0
 
     def mock_add(ids, embeddings, documents, metadatas):
@@ -165,7 +179,7 @@ def mock_project_manager(tmp_path):
     def mock_create_project(name, description="", embedding_model="all-MiniLM-L6-v2", metadata=None):
         """Simulate project creation."""
         import uuid
-        from datetime import datetime
+        from datetime import datetime, timezone
 
         # Check for duplicate name
         for p in mock._projects.values():
@@ -173,13 +187,14 @@ def mock_project_manager(tmp_path):
                 raise ValueError(f"Project with name '{name}' already exists")
 
         project_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
         project = Project(
             project_id=project_id,
             name=name,
             description=description,
             embedding_model=embedding_model,
-            created_at=datetime.utcnow().isoformat(),
-            updated_at=datetime.utcnow().isoformat(),
+            created_at=now,
+            updated_at=now,
             metadata=metadata or {},
         )
         mock._projects[project_id] = project
@@ -317,7 +332,11 @@ def mock_knowledgebeast_tools(mock_project_manager, mock_embedding_engine, mock_
         return {"success": True, "project_id": project_id, "message": "Project deleted successfully"}
 
     # Document operations
+    _doc_counter = 0  # Counter for unique doc IDs
+
     async def kb_ingest(project_id, content=None, file_path=None, metadata=None):
+        nonlocal _doc_counter
+
         if not content and not file_path:
             return {"error": "Must provide either content or file_path"}
 
@@ -332,7 +351,8 @@ def mock_knowledgebeast_tools(mock_project_manager, mock_embedding_engine, mock_
             content = file_path_obj.read_text()
 
         import time
-        doc_id = f"doc_{int(time.time() * 1000)}"
+        _doc_counter += 1
+        doc_id = f"doc_{int(time.time() * 1000)}_{_doc_counter}"
 
         mock_vector_store.add(
             ids=doc_id,

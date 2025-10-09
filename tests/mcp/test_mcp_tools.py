@@ -16,9 +16,10 @@ from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 
 from knowledgebeast.core.project_manager import Project
+from tests.mcp.conftest import MCPConfig
 
 # All fixtures imported from conftest.py (mocked for speed)
-# Note: MCPConfig and KnowledgeBeastTools are mocked to avoid slow I/O
+# Note: MCPConfig is imported from conftest (mock), KnowledgeBeastTools is mocked to avoid slow I/O
 
 
 # ===== Project Management Tests =====
