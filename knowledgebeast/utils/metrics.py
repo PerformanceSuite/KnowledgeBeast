@@ -20,6 +20,11 @@ from knowledgebeast.utils.observability import (
     embedding_cache_hits,
     embedding_cache_misses,
     query_duration,
+    query_expansion_duration,
+    query_expansions_total,
+    semantic_cache_hits_total,
+    semantic_cache_misses_total,
+    semantic_cache_similarity_scores,
     vector_search_duration,
 )
 
@@ -203,3 +208,55 @@ def measure_vector_search(search_type: str) -> Generator[None, None, None]:
     finally:
         duration = time.time() - start_time
         record_vector_search(search_type, duration)
+
+
+# Query expansion metrics (Phase 2)
+def record_query_expansion(duration: float) -> None:
+    """Record query expansion metrics.
+
+    Args:
+        duration: Expansion duration in seconds
+    """
+    query_expansions_total.inc()
+    query_expansion_duration.observe(duration)
+    logger.debug(
+        "query_expansion_metrics_recorded",
+        duration_seconds=duration
+    )
+
+
+@contextmanager
+def measure_query_expansion() -> Generator[None, None, None]:
+    """Context manager to measure and record query expansion operations.
+
+    Example:
+        with measure_query_expansion():
+            result = expander.expand(query)
+    """
+    start_time = time.time()
+    try:
+        yield
+    finally:
+        duration = time.time() - start_time
+        record_query_expansion(duration)
+
+
+# Semantic cache metrics (Phase 2)
+def record_semantic_cache_hit(similarity: float) -> None:
+    """Record semantic cache hit with similarity score.
+
+    Args:
+        similarity: Similarity score (0-1)
+    """
+    semantic_cache_hits_total.inc()
+    semantic_cache_similarity_scores.observe(similarity)
+    logger.debug(
+        "semantic_cache_hit_recorded",
+        similarity=similarity
+    )
+
+
+def record_semantic_cache_miss() -> None:
+    """Record semantic cache miss."""
+    semantic_cache_misses_total.inc()
+    logger.debug("semantic_cache_miss_recorded")

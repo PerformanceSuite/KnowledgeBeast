@@ -20,3 +20,11 @@ opentelemetry-instrumentation-fastapi>=0.41b0
 prometheus-client>=0.19.0
 prometheus-fastapi-instrumentator>=6.1.0
 structlog>=23.2.0
+
+# Query expansion dependencies
+nltk>=3.8.0  # WordNet for synonym expansion
+numpy>=1.24.0  # Embedding similarity calculations
+
+# Optional dependencies (install with pip install knowledgebeast[ner])
+# spacy>=3.5.0  # Named Entity Recognition
+# en-core-web-sm  # spaCy English model (python -m spacy download en_core_web_sm)
