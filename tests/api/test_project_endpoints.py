@@ -17,78 +17,11 @@ NOTE: These tests are for experimental multi-project features not included
 in v2.2.0. Skipping to focus on stable Phase 2 Advanced RAG features.
 """
 
-import os
 import pytest
-import tempfile
-from pathlib import Path
 from fastapi.testclient import TestClient
 
-from knowledgebeast.api.app import create_app
-
-
-@pytest.fixture(scope="function")
-def test_db_path():
-    """Create temporary database path for testing."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir) / "test_projects.db"
-        yield str(db_path)
-
-
-@pytest.fixture(scope="function")
-def test_chroma_path():
-    """Create temporary ChromaDB path for testing."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        chroma_path = Path(tmpdir) / "test_chroma"
-        yield str(chroma_path)
-
-
-@pytest.fixture(scope="function")
-def client(test_db_path, test_chroma_path, monkeypatch):
-    """Create test client with temporary database."""
-    # Set test API key
-    monkeypatch.setenv("KB_API_KEY", "test-api-key-12345")
-
-    # Disable rate limiting for tests
-    monkeypatch.setenv("KB_RATE_LIMIT_PER_MINUTE", "10000")
-
-    # Override project manager paths via monkeypatch
-    from knowledgebeast.api import routes
-    from knowledgebeast.api import auth
-
-    # Reset singleton before each test
-    routes._project_manager_instance = None
-
-    # Reset rate limits before each test
-    auth.reset_rate_limit()
-
-    # Patch the get_project_manager to use test paths
-    original_get_pm = routes.get_project_manager
-
-    def get_test_project_manager():
-        if routes._project_manager_instance is None:
-            from knowledgebeast.core.project_manager import ProjectManager
-            routes._project_manager_instance = ProjectManager(
-                storage_path=test_db_path,
-                chroma_path=test_chroma_path,
-                cache_capacity=100
-            )
-        return routes._project_manager_instance
-
-    monkeypatch.setattr(routes, "get_project_manager", get_test_project_manager)
-
-    app = create_app()
-
-    with TestClient(app) as test_client:
-        yield test_client
-
-    # Cleanup after test
-    routes._project_manager_instance = None
-
-
-@pytest.fixture
-def api_headers():
-    """API headers with authentication."""
-    return {"X-API-Key": "test-api-key-12345"}
+# All fixtures are now defined in tests/api/conftest.py
+# Tests will automatically use the clean, isolated fixtures
 
 
 # ============================================================================
