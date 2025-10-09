@@ -1,0 +1,241 @@
+# Prometheus alerting rules for KnowledgeBeast
+# Documentation: https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
+
+groups:
+  - name: knowledgebeast_performance
+    interval: 30s
+    rules:
+      # High Latency Warning: P99 > 150ms for 5 minutes
+      - alert: HighLatency_Warning
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(knowledgebeast_query_latency_seconds_bucket[5m])) by (le)
+          ) * 1000 > 150
+        for: 5m
+        labels:
+          severity: warning
+          component: query_engine
+          team: backend
+        annotations:
+          summary: "High query latency detected (P99 > 150ms)"
+          description: |
+            KnowledgeBeast query P99 latency is {{ $value | humanize }}ms,
+            exceeding the 150ms warning threshold for 5 minutes.
+            This may indicate performance degradation.
+          dashboard: "http://grafana:3000/d/knowledgebeast-overview"
+          runbook: "https://docs.knowledgebeast.io/runbooks/high-latency"
+
+      # High Latency Critical: P99 > 500ms for 2 minutes
+      - alert: HighLatency_Critical
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(knowledgebeast_query_latency_seconds_bucket[5m])) by (le)
+          ) * 1000 > 500
+        for: 2m
+        labels:
+          severity: critical
+          component: query_engine
+          team: backend
+          oncall: "true"
+        annotations:
+          summary: "CRITICAL: Severe query latency detected (P99 > 500ms)"
+          description: |
+            KnowledgeBeast query P99 latency is {{ $value | humanize }}ms,
+            exceeding the CRITICAL 500ms threshold for 2 minutes.
+            Immediate investigation required - users are experiencing severe degradation.
+          dashboard: "http://grafana:3000/d/knowledgebeast-overview"
+          runbook: "https://docs.knowledgebeast.io/runbooks/critical-latency"
+          pagerduty: "true"
+
+      # High Error Rate: > 1% for 5 minutes
+      - alert: HighErrorRate
+        expr: |
+          (
+            sum(rate(knowledgebeast_errors_total[5m]))
+            /
+            sum(rate(knowledgebeast_queries_total[5m]))
+          ) * 100 > 1
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+          team: backend
+        annotations:
+          summary: "High error rate detected (> 1%)"
+          description: |
+            KnowledgeBeast error rate is {{ $value | humanizeDuration }}%,
+            exceeding the 1% threshold for 5 minutes.
+            Current error rate indicates {{ $value | humanize }}% of requests are failing.
+          dashboard: "http://grafana:3000/d/knowledgebeast-overview"
+          runbook: "https://docs.knowledgebeast.io/runbooks/high-error-rate"
+
+  - name: knowledgebeast_infrastructure
+    interval: 30s
+    rules:
+      # ChromaDB Down: Immediate alert
+      - alert: ChromaDBDown
+        expr: up{job="chromadb"} == 0
+        for: 0m
+        labels:
+          severity: critical
+          component: database
+          team: infrastructure
+          oncall: "true"
+        annotations:
+          summary: "CRITICAL: ChromaDB is down"
+          description: |
+            ChromaDB vector database is unreachable.
+            All vector search functionality is offline.
+            Immediate action required.
+          dashboard: "http://grafana:3000/d/knowledgebeast-overview"
+          runbook: "https://docs.knowledgebeast.io/runbooks/chromadb-down"
+          pagerduty: "true"
+
+      # Low Cache Hit Ratio: < 50% for 10 minutes
+      - alert: LowCacheHitRatio
+        expr: |
+          (
+            sum(rate(knowledgebeast_cache_hits_total[5m]))
+            /
+            (
+              sum(rate(knowledgebeast_cache_hits_total[5m])) +
+              sum(rate(knowledgebeast_cache_misses_total[5m]))
+            )
+          ) * 100 < 50
+        for: 10m
+        labels:
+          severity: warning
+          component: cache
+          team: backend
+        annotations:
+          summary: "Low cache hit ratio (< 50%)"
+          description: |
+            KnowledgeBeast cache hit ratio is {{ $value | humanize }}%,
+            below the 50% threshold for 10 minutes.
+            This may indicate cache sizing issues or query pattern changes.
+          dashboard: "http://grafana:3000/d/knowledgebeast-overview"
+          runbook: "https://docs.knowledgebeast.io/runbooks/low-cache-hits"
+
+  - name: knowledgebeast_resources
+    interval: 1m
+    rules:
+      # Disk Space Warning: Available < 10GB
+      - alert: DiskSpaceWarning
+        expr: |
+          node_filesystem_avail_bytes{mountpoint="/data"} / (1024^3) < 10
+        for: 5m
+        labels:
+          severity: warning
+          component: storage
+          team: infrastructure
+        annotations:
+          summary: "Disk space running low (< 10GB available)"
+          description: |
+            Available disk space on /data is {{ $value | humanize }}GB,
+            below the 10GB warning threshold.
+            Plan for capacity expansion or data cleanup.
+          dashboard: "http://grafana:3000/d/knowledgebeast-overview"
+          runbook: "https://docs.knowledgebeast.io/runbooks/disk-space"
+
+      # Disk Space Critical: Available < 5GB
+      - alert: DiskSpaceCritical
+        expr: |
+          node_filesystem_avail_bytes{mountpoint="/data"} / (1024^3) < 5
+        for: 2m
+        labels:
+          severity: critical
+          component: storage
+          team: infrastructure
+          oncall: "true"
+        annotations:
+          summary: "CRITICAL: Disk space critically low (< 5GB available)"
+          description: |
+            Available disk space on /data is {{ $value | humanize }}GB,
+            below the CRITICAL 5GB threshold.
+            Service degradation imminent. Immediate action required.
+          dashboard: "http://grafana:3000/d/knowledgebeast-overview"
+          runbook: "https://docs.knowledgebeast.io/runbooks/disk-space-critical"
+          pagerduty: "true"
+
+  - name: knowledgebeast_availability
+    interval: 30s
+    rules:
+      # API Server Down
+      - alert: APIServerDown
+        expr: up{job="knowledgebeast"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: api
+          team: backend
+          oncall: "true"
+        annotations:
+          summary: "CRITICAL: KnowledgeBeast API server is down"
+          description: |
+            KnowledgeBeast API server is unreachable for 1 minute.
+            All services are offline. Immediate investigation required.
+          dashboard: "http://grafana:3000/d/knowledgebeast-overview"
+          runbook: "https://docs.knowledgebeast.io/runbooks/api-down"
+          pagerduty: "true"
+
+      # High 5xx Error Rate
+      - alert: High5xxErrorRate
+        expr: |
+          (
+            sum(rate(knowledgebeast_http_requests_total{status=~"5.."}[5m]))
+            /
+            sum(rate(knowledgebeast_http_requests_total[5m]))
+          ) * 100 > 5
+        for: 3m
+        labels:
+          severity: critical
+          component: api
+          team: backend
+        annotations:
+          summary: "High 5xx error rate detected (> 5%)"
+          description: |
+            Server error rate (5xx) is {{ $value | humanize }}%,
+            exceeding the 5% threshold for 3 minutes.
+            Indicates serious backend issues affecting users.
+          dashboard: "http://grafana:3000/d/knowledgebeast-overview"
+          runbook: "https://docs.knowledgebeast.io/runbooks/5xx-errors"
+
+  - name: knowledgebeast_vector_search
+    interval: 30s
+    rules:
+      # Vector Search Latency High
+      - alert: VectorSearchLatencyHigh
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(knowledgebeast_vector_search_latency_seconds_bucket[5m])) by (le)
+          ) * 1000 > 200
+        for: 5m
+        labels:
+          severity: warning
+          component: vector_search
+          team: backend
+        annotations:
+          summary: "Vector search latency high (P95 > 200ms)"
+          description: |
+            Vector search P95 latency is {{ $value | humanize }}ms,
+            exceeding the 200ms threshold for 5 minutes.
+            ChromaDB performance may be degraded.
+          dashboard: "http://grafana:3000/d/knowledgebeast-overview"
+          runbook: "https://docs.knowledgebeast.io/runbooks/vector-search-slow"
+
+      # ChromaDB Collection Size Growing Rapidly
+      - alert: ChromaDBCollectionSizeIncreasing
+        expr: |
+          rate(knowledgebeast_chromadb_collection_size[1h]) > 1000
+        for: 30m
+        labels:
+          severity: info
+          component: database
+          team: backend
+        annotations:
+          summary: "ChromaDB collection growing rapidly"
+          description: |
+            ChromaDB collection {{$labels.collection}} is growing at
+            {{ $value | humanize }} documents/hour.
+            Monitor for capacity planning.
+          dashboard: "http://grafana:3000/d/knowledgebeast-overview"
