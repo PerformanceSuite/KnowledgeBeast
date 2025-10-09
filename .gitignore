@@ -153,3 +153,4 @@ knowledge-base/
 .DS_Store
 Thumbs.db
 chroma/
+*.db
