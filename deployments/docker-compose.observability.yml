@@ -1,0 +1,206 @@
+version: '3.8'
+
+# KnowledgeBeast Observability Stack
+# Includes: Prometheus, Grafana, Jaeger for complete monitoring and tracing
+# Documentation: https://docs.knowledgebeast.io/observability
+
+services:
+  # Prometheus - Metrics collection and storage
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    container_name: knowledgebeast-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      # Configuration files
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      # Persistent data storage
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+    networks:
+      - observability
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    labels:
+      com.knowledgebeast.service: "prometheus"
+      com.knowledgebeast.description: "Metrics collection and storage"
+
+  # Grafana - Metrics visualization and dashboards
+  grafana:
+    image: grafana/grafana:10.1.5
+    container_name: knowledgebeast-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      # Dashboard provisioning
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      # Persistent data storage
+      - grafana-data:/var/lib/grafana
+    environment:
+      # Security settings
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin123  # Change in production!
+
+      # Anonymous access for demo (disable in production)
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+
+      # Server settings
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+      - GF_SERVER_SERVE_FROM_SUB_PATH=false
+
+      # Analytics
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+
+      # Feature toggles
+      - GF_FEATURE_TOGGLES_ENABLE=publicDashboards
+
+      # Database (using SQLite by default, can configure PostgreSQL)
+      - GF_DATABASE_TYPE=sqlite3
+      - GF_DATABASE_PATH=/var/lib/grafana/grafana.db
+
+      # Logging
+      - GF_LOG_LEVEL=info
+      - GF_LOG_MODE=console
+    networks:
+      - observability
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    labels:
+      com.knowledgebeast.service: "grafana"
+      com.knowledgebeast.description: "Metrics visualization and dashboards"
+
+  # Jaeger - Distributed tracing
+  jaeger:
+    image: jaegertracing/all-in-one:1.50
+    container_name: knowledgebeast-jaeger
+    restart: unless-stopped
+    ports:
+      # Jaeger UI
+      - "16686:16686"
+      # OTLP gRPC receiver
+      - "4317:4317"
+      # OTLP HTTP receiver
+      - "4318:4318"
+      # Jaeger Thrift HTTP
+      - "14268:14268"
+      # Jaeger gRPC
+      - "14250:14250"
+    environment:
+      # Storage
+      - SPAN_STORAGE_TYPE=badger
+      - BADGER_EPHEMERAL=false
+      - BADGER_DIRECTORY_VALUE=/badger/data
+      - BADGER_DIRECTORY_KEY=/badger/key
+
+      # Collector
+      - COLLECTOR_OTLP_ENABLED=true
+      - COLLECTOR_ZIPKIN_HOST_PORT=:9411
+
+      # Query settings
+      - QUERY_BASE_PATH=/
+      - QUERY_MAX_CLOCK_SKEW_ADJUSTMENT=0s
+
+      # Sampling
+      - SAMPLING_STRATEGIES_FILE=/etc/jaeger/sampling_strategies.json
+    volumes:
+      - jaeger-data:/badger
+    networks:
+      - observability
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:16686/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    labels:
+      com.knowledgebeast.service: "jaeger"
+      com.knowledgebeast.description: "Distributed tracing"
+
+  # Node Exporter - System metrics (optional)
+  node-exporter:
+    image: prom/node-exporter:v1.6.1
+    container_name: knowledgebeast-node-exporter
+    restart: unless-stopped
+    ports:
+      - "9100:9100"
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/host'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host:ro
+    networks:
+      - observability
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9100/metrics"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    labels:
+      com.knowledgebeast.service: "node-exporter"
+      com.knowledgebeast.description: "System metrics exporter"
+
+  # Alertmanager - Alert routing and management (optional)
+  # alertmanager:
+  #   image: prom/alertmanager:v0.26.0
+  #   container_name: knowledgebeast-alertmanager
+  #   restart: unless-stopped
+  #   ports:
+  #     - "9093:9093"
+  #   volumes:
+  #     - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+  #     - alertmanager-data:/alertmanager
+  #   command:
+  #     - '--config.file=/etc/alertmanager/alertmanager.yml'
+  #     - '--storage.path=/alertmanager'
+  #   networks:
+  #     - observability
+  #   labels:
+  #     com.knowledgebeast.service: "alertmanager"
+  #     com.knowledgebeast.description: "Alert routing and management"
+
+networks:
+  observability:
+    name: knowledgebeast-observability
+    driver: bridge
+
+volumes:
+  prometheus-data:
+    name: knowledgebeast-prometheus-data
+    driver: local
+  grafana-data:
+    name: knowledgebeast-grafana-data
+    driver: local
+  jaeger-data:
+    name: knowledgebeast-jaeger-data
+    driver: local
+  # alertmanager-data:
+  #   name: knowledgebeast-alertmanager-data
+  #   driver: local

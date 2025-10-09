@@ -1,0 +1,105 @@
+# Prometheus configuration for KnowledgeBeast monitoring
+# Documentation: https://prometheus.io/docs/prometheus/latest/configuration/configuration/
+
+global:
+  # How frequently to scrape targets by default
+  scrape_interval: 15s
+
+  # How frequently to evaluate rules
+  evaluation_interval: 15s
+
+  # Attach these labels to any time series or alerts when communicating with
+  # external systems (federation, remote storage, Alertmanager)
+  external_labels:
+    cluster: 'knowledgebeast-production'
+    environment: 'production'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          # - 'alertmanager:9093'  # Uncomment when Alertmanager is deployed
+
+# Load rules once and periodically evaluate them according to the global 'evaluation_interval'
+rule_files:
+  - "/etc/prometheus/alerts.yml"
+
+# Scrape configuration
+scrape_configs:
+  # KnowledgeBeast API server
+  - job_name: 'knowledgebeast'
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['localhost:8000']
+        labels:
+          service: 'knowledgebeast-api'
+          component: 'backend'
+
+    # Relabel configurations
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'knowledgebeast-api'
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    scrape_interval: 30s
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'
+          component: 'monitoring'
+
+  # Node Exporter for system metrics (optional, uncomment if deployed)
+  # - job_name: 'node_exporter'
+  #   scrape_interval: 15s
+  #   static_configs:
+  #     - targets: ['node-exporter:9100']
+  #       labels:
+  #         service: 'node-exporter'
+  #         component: 'infrastructure'
+
+  # ChromaDB metrics (if exposed)
+  # - job_name: 'chromadb'
+  #   scrape_interval: 30s
+  #   metrics_path: '/metrics'
+  #   static_configs:
+  #     - targets: ['chromadb:8000']
+  #       labels:
+  #         service: 'chromadb'
+  #         component: 'database'
+
+# Storage configuration
+storage:
+  tsdb:
+    # How long to retain data
+    retention.time: 30d
+
+    # Maximum size of storage (optional)
+    # retention.size: 50GB
+
+    # Path to storage directory (default: data/)
+    path: /prometheus
+
+    # Compress old blocks (saves ~50% space)
+    wal_compression: true
+
+# Remote write configuration (optional - for long-term storage)
+# remote_write:
+#   - url: "https://your-long-term-storage/api/v1/write"
+#     queue_config:
+#       capacity: 10000
+#       max_shards: 50
+#       min_shards: 1
+#       max_samples_per_send: 5000
+#       batch_send_deadline: 5s
+#       min_backoff: 30ms
+#       max_backoff: 100ms
+
+# Remote read configuration (optional)
+# remote_read:
+#   - url: "https://your-long-term-storage/api/v1/read"
+#     read_recent: true
