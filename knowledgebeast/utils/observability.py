@@ -207,6 +207,74 @@ semantic_cache_similarity_scores = Histogram(
     buckets=(0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.92, 0.94, 0.95, 0.96, 0.97, 0.98, 0.99, 1.0)
 )
 
+# ============================================================================
+# Per-Project Metrics (v2.3.0 - Security & Observability)
+# ============================================================================
+
+project_queries_total = Counter(
+    "kb_project_queries_total",
+    "Total queries per project",
+    ["project_id", "status"],
+    registry=metrics_registry
+)
+
+project_query_duration = Histogram(
+    "kb_project_query_duration_seconds",
+    "Query latency per project in seconds",
+    ["project_id"],
+    registry=metrics_registry,
+    buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
+)
+
+project_documents_total = Gauge(
+    "kb_project_documents_total",
+    "Total documents per project",
+    ["project_id"],
+    registry=metrics_registry
+)
+
+project_cache_hits_total = Counter(
+    "kb_project_cache_hits_total",
+    "Cache hits per project",
+    ["project_id"],
+    registry=metrics_registry
+)
+
+project_cache_misses_total = Counter(
+    "kb_project_cache_misses_total",
+    "Cache misses per project",
+    ["project_id"],
+    registry=metrics_registry
+)
+
+project_ingests_total = Counter(
+    "kb_project_ingests_total",
+    "Total documents ingested per project",
+    ["project_id", "status"],
+    registry=metrics_registry
+)
+
+project_errors_total = Counter(
+    "kb_project_errors_total",
+    "Total errors per project",
+    ["project_id", "error_type"],
+    registry=metrics_registry
+)
+
+project_api_key_validations_total = Counter(
+    "kb_project_api_key_validations_total",
+    "Total API key validation attempts per project",
+    ["project_id", "result"],
+    registry=metrics_registry
+)
+
+project_api_keys_active = Gauge(
+    "kb_project_api_keys_active",
+    "Number of active (non-revoked) API keys per project",
+    ["project_id"],
+    registry=metrics_registry
+)
+
 
 def setup_opentelemetry(
     service_name: str = SERVICE_NAME,
