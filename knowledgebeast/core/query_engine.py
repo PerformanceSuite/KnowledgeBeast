@@ -464,7 +464,7 @@ class HybridQueryEngine:
         with tracer.start_as_current_span("query.hybrid_search") as span:
             if not query or not query.strip():
                 span.set_attribute("query.empty", True)
-                return []
+                return [], False
 
             alpha = alpha if alpha is not None else self.alpha
             if not 0 <= alpha <= 1:
@@ -480,9 +480,10 @@ class HybridQueryEngine:
             with measure_vector_search("hybrid"):
                 # Get vector scores
                 with tracer.start_as_current_span("query.vector_phase") as vector_span:
-                    vector_results = self.search_vector(query, top_k=top_k * 2)  # Get more for reranking
+                    vector_results, degraded = self.search_vector(query, top_k=top_k * 2)  # Get more for reranking
                     vector_scores = {doc_id: score for doc_id, _, score in vector_results}
                     vector_span.set_attribute("results_count", len(vector_results))
+                    vector_span.set_attribute("degraded_mode", degraded)
 
                 # Get keyword scores
                 with tracer.start_as_current_span("query.keyword_phase") as keyword_span:
@@ -517,8 +518,9 @@ class HybridQueryEngine:
                 ]
 
             span.set_attribute("query.final_results", len(results))
-            logger.debug(f"Hybrid search (alpha={alpha}) for '{query[:50]}' returned {len(results)} results")
-            return results
+            span.set_attribute("query.degraded_mode", degraded)
+            logger.debug(f"Hybrid search (alpha={alpha}) for '{query[:50]}' returned {len(results)} results (degraded={degraded})")
+            return results, degraded
 
     def search_with_mmr(
         self,
@@ -555,11 +557,11 @@ class HybridQueryEngine:
 
         # Get initial results (more than top_k for diversity)
         if mode == 'vector':
-            candidates = self.search_vector(query, top_k=top_k * 3)
+            candidates, _ = self.search_vector(query, top_k=top_k * 3)
         elif mode == 'keyword':
             candidates = self.search_keyword(query)[:top_k * 3]
         else:  # hybrid
-            candidates = self.search_hybrid(query, top_k=top_k * 3)
+            candidates, _ = self.search_hybrid(query, top_k=top_k * 3)
 
         if not candidates:
             return []
@@ -645,11 +647,11 @@ class HybridQueryEngine:
 
         # Get initial results
         if mode == 'vector':
-            candidates = self.search_vector(query, top_k=top_k * 3)
+            candidates, _ = self.search_vector(query, top_k=top_k * 3)
         elif mode == 'keyword':
             candidates = self.search_keyword(query)[:top_k * 3]
         else:  # hybrid
-            candidates = self.search_hybrid(query, top_k=top_k * 3)
+            candidates, _ = self.search_hybrid(query, top_k=top_k * 3)
 
         if not candidates:
             return []
