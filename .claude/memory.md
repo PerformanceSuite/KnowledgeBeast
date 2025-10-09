@@ -13,6 +13,68 @@
 
 ## Recent Work
 
+### Session: October 8, 2025 - Cleanup Script Fixed & Enhanced ✅
+
+**What was accomplished:**
+- ✅ **Fixed cleanup.sh** - Comprehensive review and enhancement
+- ✅ **Added Missing Cleanup Steps** - Test databases, ChromaDB, caches
+- ✅ **Improved Process Killing** - Auto-kills lingering Python processes
+- ✅ **Better Portability** - Portable sed for macOS + Linux
+- ✅ **Added Verification** - Confirms cleanup succeeded
+- ✅ **Added *.db to .gitignore** - Test databases now properly ignored
+
+**Issues Found:**
+1. ❌ Test databases not cleaned (kb_projects.db, projects.db)
+2. ❌ ChromaDB databases left behind (chroma/*.sqlite3)
+3. ❌ Knowledge base cache not removed (.knowledge_cache.pkl)
+4. ❌ Tool caches not cleaned (mypy, ruff)
+5. ❌ Incomplete sed (created .bak files on macOS)
+6. ❌ No verification step
+
+**Enhancements Made:**
+- ✅ **Test Database Cleanup** - Removes kb_projects.db, projects.db, test*.db
+- ✅ **ChromaDB Cleanup** - Cleans chroma/*.sqlite3 and chroma_db/*.sqlite3
+- ✅ **Knowledge Base Cache** - Removes .knowledge_cache.pkl files
+- ✅ **Mypy Cache** - Removes .mypy_cache directories
+- ✅ **Ruff Cache** - Removes .ruff_cache directories
+- ✅ **Coverage Files** - Now removes .coverage.* files
+- ✅ **Process Management** - Auto-kills lingering Python processes
+- ✅ **Portable sed** - Works on macOS and Linux (no .bak files)
+- ✅ **Verification Step** - Confirms all temp files cleaned
+- ✅ **14 Cleanup Steps Total** - Comprehensive and robust
+
+**Files Modified:**
+1. `.claude/cleanup.sh` - Added 80 lines, 6 new cleanup steps
+2. `.gitignore` - Added *.db pattern
+
+**Test Results:**
+```bash
+✅ Background processes killed
+✅ Python cache cleaned
+✅ Pytest cache cleaned
+✅ Coverage files cleaned
+✅ Temporary files cleaned
+✅ macOS files cleaned
+✅ Test databases cleaned (NEW!)
+✅ Knowledge base cache cleaned (NEW!)
+✅ Empty directories removed
+✅ Timestamp updated
+✅ Mypy cache cleaned (NEW!)
+✅ Ruff cache cleaned (NEW!)
+✅ Verification passed
+```
+
+**Commits Made:**
+- `53c012b` - fix: Comprehensive cleanup.sh improvements
+- `217fd21` - chore: Remove test database files
+- `f040254` - chore: Add *.db to .gitignore
+
+**Impact:**
+- Cleanup now properly removes ALL temporary files
+- No more manual cleanup needed after E2E tests
+- Works consistently on macOS and Linux
+- Verifies cleanup succeeded
+
 ### Session: October 8, 2025 - v2.0.0-rc.1 Tagged! E2E + Concurrency Tests 100% ✅
 
 **What was accomplished:**
