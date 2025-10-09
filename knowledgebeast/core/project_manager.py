@@ -117,6 +117,11 @@ class ProjectManager:
         - ChromaDB for per-project collections
         - In-memory LRU caches per project
 
+    Connection Pooling:
+        - Singleton ChromaDB client (thread-safe)
+        - Collection cache for fast access
+        - Minimizes connection overhead
+
     Usage:
         manager = ProjectManager(storage_path="./projects.db")
 
@@ -160,8 +165,13 @@ class ProjectManager:
         # Per-project caches (project_id -> LRUCache)
         self._project_caches: Dict[str, LRUCache] = {}
 
-        # ChromaDB client (lazy initialization)
+        # ChromaDB client (lazy initialization with singleton pattern)
         self._chroma_client: Optional[chromadb.Client] = None
+        self._client_lock = threading.RLock()
+
+        # Collection cache for fast access (project_id -> Collection)
+        self._collection_cache: Dict[str, Any] = {}
+        self._cache_lock = threading.RLock()
 
         # Initialize database
         self._init_database()
@@ -210,21 +220,86 @@ class ProjectManager:
         finally:
             conn.close()
 
-    def _get_chroma_client(self) -> chromadb.Client:
-        """Get or create ChromaDB client.
+    @property
+    def chroma_client(self) -> chromadb.Client:
+        """Lazy-initialized singleton ChromaDB client (thread-safe).
+
+        Uses double-check locking pattern for optimal performance.
 
         Returns:
             ChromaDB client instance
         """
         if self._chroma_client is None:
-            self.chroma_path.mkdir(parents=True, exist_ok=True)
-            # Use PersistentClient for proper persistence
-            self._chroma_client = chromadb.PersistentClient(
-                path=str(self.chroma_path)
-            )
-            logger.debug(f"ChromaDB client initialized: {self.chroma_path}")
+            with self._client_lock:
+                # Double-check locking pattern
+                if self._chroma_client is None:
+                    self.chroma_path.mkdir(parents=True, exist_ok=True)
+                    # Use PersistentClient for proper persistence
+                    self._chroma_client = chromadb.PersistentClient(
+                        path=str(self.chroma_path)
+                    )
+                    logger.info(f"ChromaDB client initialized (singleton): {self.chroma_path}")
 
         return self._chroma_client
+
+    def get_collection(self, project_id: str) -> Optional[Any]:
+        """Get or create cached collection (thread-safe).
+
+        Uses collection cache to minimize ChromaDB access overhead.
+
+        Args:
+            project_id: Project identifier
+
+        Returns:
+            ChromaDB collection or None if project not found
+        """
+        with self._cache_lock:
+            # Check if collection is cached
+            if project_id in self._collection_cache:
+                logger.debug(f"Collection cache hit for project: {project_id}")
+                return self._collection_cache[project_id]
+
+            # Verify project exists
+            project = self._load_project_from_db(project_id)
+            if not project:
+                logger.warning(f"Project not found: {project_id}")
+                return None
+
+            # Get or create collection
+            try:
+                collection = self.chroma_client.get_or_create_collection(
+                    name=project.collection_name,
+                    metadata={
+                        "project_id": project.project_id,
+                        "embedding_model": project.embedding_model
+                    }
+                )
+                # Cache the collection
+                self._collection_cache[project_id] = collection
+                logger.debug(f"Collection cached for project: {project_id}")
+                return collection
+            except Exception as e:
+                logger.error(f"Failed to get collection for project {project_id}: {e}")
+                return None
+
+    def invalidate_collection_cache(self, project_id: str) -> None:
+        """Invalidate cached collection (e.g., after deletion).
+
+        Args:
+            project_id: Project identifier
+        """
+        with self._cache_lock:
+            if project_id in self._collection_cache:
+                del self._collection_cache[project_id]
+                logger.debug(f"Invalidated collection cache for project: {project_id}")
+
+    def _get_chroma_client(self) -> chromadb.Client:
+        """Get or create ChromaDB client (deprecated - use chroma_client property).
+
+        Returns:
+            ChromaDB client instance
+        """
+        return self.chroma_client
 
     def create_project(
         self,
@@ -312,20 +387,13 @@ class ProjectManager:
             capacity=self.cache_capacity
         )
 
-        # Initialize ChromaDB collection
-        try:
-            client = self._get_chroma_client()
-            client.create_collection(
-                name=project.collection_name,
-                metadata={
-                    "project_id": project.project_id,
-                    "embedding_model": project.embedding_model
-                }
-            )
-            logger.debug(f"Created ChromaDB collection: {project.collection_name}")
-        except Exception as e:
-            # Collection might already exist
-            logger.debug(f"ChromaDB collection exists or error: {e}")
+        # Initialize ChromaDB collection using get_collection (which caches it)
+        # This uses the connection pooling pattern
+        collection = self.get_collection(project.project_id)
+        if collection:
+            logger.debug(f"Initialized ChromaDB collection: {project.collection_name}")
+        else:
+            logger.warning(f"Failed to initialize collection for project: {project.project_id}")
 
     def get_project(self, project_id: str) -> Optional[Project]:
         """Get project by ID.
@@ -543,10 +611,12 @@ class ProjectManager:
             del self._project_caches[project.project_id]
             logger.debug(f"Cleared cache for project: {project.project_id}")
 
+        # Invalidate collection cache
+        self.invalidate_collection_cache(project.project_id)
+
         # Delete ChromaDB collection
         try:
-            client = self._get_chroma_client()
-            client.delete_collection(name=project.collection_name)
+            self.chroma_client.delete_collection(name=project.collection_name)
             logger.debug(f"Deleted ChromaDB collection: {project.collection_name}")
         except Exception as e:
             logger.warning(f"Failed to delete ChromaDB collection: {e}")
@@ -576,23 +646,16 @@ class ProjectManager:
     def get_project_collection(self, project_id: str) -> Optional[Any]:
         """Get per-project ChromaDB collection.
 
+        Uses connection pooling and collection cache for optimal performance.
+
         Args:
             project_id: Project identifier
 
         Returns:
             ChromaDB collection or None if project not found
         """
-        with self._lock:
-            project = self._load_project_from_db(project_id)
-            if not project:
-                return None
-
-            try:
-                client = self._get_chroma_client()
-                return client.get_collection(name=project.collection_name)
-            except Exception as e:
-                logger.error(f"Failed to get collection: {e}")
-                return None
+        # Delegate to get_collection which handles caching
+        return self.get_collection(project_id)
 
     def clear_project_cache(self, project_id: str) -> bool:
         """Clear per-project query cache.
@@ -893,6 +956,22 @@ class ProjectManager:
             self._project_caches.clear()
 
             logger.info("Cleaned up all project resources")
+
+    def close(self) -> None:
+        """Close ChromaDB client and clear all caches.
+
+        Should be called when shutting down the ProjectManager.
+        """
+        with self._client_lock:
+            self._chroma_client = None
+
+        with self._cache_lock:
+            self._collection_cache.clear()
+
+        with self._lock:
+            self._project_caches.clear()
+
+        logger.info("ProjectManager closed and all caches cleared")
 
     def __enter__(self) -> 'ProjectManager':
         """Context manager entry."""
