@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, AsyncGenerator, Dict, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -50,6 +50,9 @@ from knowledgebeast.api.models import (
     PaginationMetadata,
     ProjectCreate,
     ProjectDeleteResponse,
+    ProjectExportResponse,
+    ProjectImportRequest,
+    ProjectImportResponse,
     ProjectIngestRequest,
     ProjectListResponse,
     ProjectQueryRequest,
@@ -1486,6 +1489,100 @@ async def project_ingest(
 
 
 # ============================================================================
+# Project Export/Import Endpoints (API v2)
+# ============================================================================
+
+
+@router_v2.post(
+    "/{project_id}/export",
+    response_model=ProjectExportResponse,
+    tags=["projects"],
+    summary="Export project",
+    description="Export project as ZIP archive with all data and embeddings",
+)
+@limiter.limit("5/minute")
+async def export_project_endpoint(
+    request: Request,
+    project_id: str,
+    api_key: str = Depends(get_api_key)
+) -> ProjectExportResponse:
+    """Export a project to a ZIP file.
+
+    The export includes:
+    - Project metadata (name, description, config)
+    - All documents and their metadata
+    - All embeddings (compressed)
+    - Manifest with version and export info
+
+    Args:
+        project_id: Project identifier
+
+    Returns:
+        Export response with file path and stats
+
+    Raises:
+        HTTPException: If project not found or export fails
+    """
+    try:
+        pm = get_project_manager()
+
+        # Verify project exists
+        loop = asyncio.get_event_loop()
+        project = await loop.run_in_executor(get_executor(), pm.get_project, project_id)
+
+        if not project:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project not found: {project_id}"
+            )
+
+        # Execute export in thread pool (can be slow for large projects)
+        logger.info(f"Starting export for project {project_id}")
+        export_path = await loop.run_in_executor(
+            get_executor(),
+            pm.export_project,
+            project_id
+        )
+
+        # Get file size
+        file_size = Path(export_path).stat().st_size
+
+        # Get document count
+        collection = pm.get_project_collection(project_id)
+        doc_count = collection.count() if collection else 0
+
+        logger.info(f"Export completed: {export_path} ({file_size} bytes)")
+
+        return ProjectExportResponse(
+            success=True,
+            project_id=project_id,
+            export_path=export_path,
+            document_count=doc_count,
+            file_size_bytes=file_size,
+            message=f"Project '{project.name}' exported successfully"
+        )
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except IOError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Export failed: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"Project export error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to export project: {str(e)}"
+        )
+
+
+# ============================================================================
 # Project Health Monitoring Endpoints (API v2)
 # ============================================================================
 
@@ -1562,6 +1659,133 @@ async def get_all_projects_health_endpoint(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get all projects health: {str(e)}"
         )
+
+
+@router_v2.post(
+    "/import",
+    response_model=ProjectImportResponse,
+    tags=["projects"],
+    summary="Import project",
+    description="Import project from ZIP archive",
+    status_code=201
+)
+@limiter.limit("5/minute")
+async def import_project_endpoint(
+    request: Request,
+    file: UploadFile,
+    import_params: Optional[ProjectImportRequest] = None,
+    api_key: str = Depends(get_api_key)
+) -> ProjectImportResponse:
+    """Import a project from a ZIP file.
+
+    Upload a ZIP file exported from another KnowledgeBeast instance.
+    All documents, embeddings, and metadata will be restored.
+
+    Args:
+        file: Uploaded ZIP file
+        import_params: Optional import parameters (new name, overwrite)
+
+    Returns:
+        Import response with project details
+
+    Raises:
+        HTTPException: If import fails or invalid ZIP
+    """
+    import tempfile
+    import os
+
+    tmp_path = None
+    try:
+        pm = get_project_manager()
+
+        # Validate file is a ZIP
+        if not file.filename.endswith('.zip'):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="File must be a ZIP archive"
+            )
+
+        # Save uploaded file temporarily
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp:
+            content = await file.read()
+            tmp.write(content)
+            tmp_path = tmp.name
+
+        logger.info(f"Received import file: {file.filename} ({len(content)} bytes)")
+
+        # Parse import parameters
+        new_name = None
+        overwrite = False
+        if import_params:
+            new_name = import_params.new_name
+            overwrite = import_params.overwrite
+
+        # Execute import in thread pool (can be slow for large projects)
+        loop = asyncio.get_event_loop()
+        project_id = await loop.run_in_executor(
+            get_executor(),
+            pm.import_project,
+            tmp_path,
+            new_name,
+            overwrite
+        )
+
+        # Get imported project details
+        project = await loop.run_in_executor(get_executor(), pm.get_project, project_id)
+        if not project:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Project imported but could not retrieve details"
+            )
+
+        # Get document count
+        collection = pm.get_project_collection(project_id)
+        doc_count = collection.count() if collection else 0
+
+        logger.info(
+            f"Import completed: project_id={project_id}, "
+            f"name={project.name}, docs={doc_count}"
+        )
+
+        return ProjectImportResponse(
+            success=True,
+            project_id=project_id,
+            project_name=project.name,
+            document_count=doc_count,
+            message=f"Project '{project.name}' imported successfully"
+        )
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except IOError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Import failed: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"Project import error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to import project: {str(e)}"
+        )
+    finally:
+        # Clean up temporary file
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+                logger.debug(f"Cleaned up temporary import file: {tmp_path}")
+            except Exception as e:
+                logger.warning(f"Failed to clean up temporary file: {e}")
+
+
+# ============================================================================
+# Project Query Streaming Endpoints (API v2)
+# ============================================================================
 
 
 @router_v2.post(

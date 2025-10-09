@@ -926,6 +926,76 @@ class ProjectDeleteResponse(BaseModel):
     message: str = Field(..., description="Status message")
 
 
+class ProjectExportResponse(BaseModel):
+    """Response model for project export."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "success": True,
+                "project_id": "550e8400-e29b-41d4-a716-446655440000",
+                "export_path": "/tmp/project_export_1234567890.zip",
+                "document_count": 42,
+                "file_size_bytes": 1048576,
+                "message": "Project exported successfully"
+            }
+        }
+    )
+
+    success: bool = Field(..., description="Whether export succeeded")
+    project_id: str = Field(..., description="Exported project ID")
+    export_path: str = Field(..., description="Path to export ZIP file")
+    document_count: int = Field(..., description="Number of documents exported")
+    file_size_bytes: int = Field(..., description="Export file size in bytes")
+    message: str = Field(..., description="Status message")
+
+
+class ProjectImportRequest(BaseModel):
+    """Request model for project import."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "new_name": "Restored Project",
+                "overwrite": False
+            }
+        }
+    )
+
+    new_name: Optional[str] = Field(
+        None,
+        description="Optional new name for imported project",
+        min_length=1,
+        max_length=100
+    )
+    overwrite: bool = Field(
+        default=False,
+        description="Whether to overwrite existing project with same name"
+    )
+
+
+class ProjectImportResponse(BaseModel):
+    """Response model for project import."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "success": True,
+                "project_id": "550e8400-e29b-41d4-a716-446655440000",
+                "project_name": "Restored Project",
+                "document_count": 42,
+                "message": "Project imported successfully"
+            }
+        }
+    )
+
+    success: bool = Field(..., description="Whether import succeeded")
+    project_id: str = Field(..., description="Imported project ID")
+    project_name: str = Field(..., description="Imported project name")
+    document_count: int = Field(..., description="Number of documents imported")
+    message: str = Field(..., description="Status message")
+
+
 # ============================================================================
 # Multi-Modal API Models
 # ============================================================================
