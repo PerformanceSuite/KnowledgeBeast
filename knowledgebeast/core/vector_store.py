@@ -2,8 +2,15 @@
 
 This module provides the VectorStore class for managing vector embeddings
 with ChromaDB, including collection CRUD operations and similarity search.
+
+Features:
+- Circuit breaker protection for all ChromaDB operations
+- Automatic retry with exponential backoff for transient failures
+- Graceful degradation when ChromaDB is unavailable
+- Comprehensive metrics and health monitoring
 """
 
+import logging
 import threading
 import time
 from pathlib import Path
@@ -44,6 +51,8 @@ class VectorStore:
         persist_directory: Optional[Union[str, Path]] = None,
         collection_name: str = "default",
         embedding_function: Optional[Any] = None,
+        enable_circuit_breaker: bool = True,
+        circuit_breaker_threshold: int = 5,
     ) -> None:
         """Initialize the vector store.
 
@@ -51,20 +60,23 @@ class VectorStore:
             persist_directory: Directory for persistent storage (None for in-memory)
             collection_name: Name of the collection to use
             embedding_function: Custom embedding function (optional)
+            enable_circuit_breaker: Enable circuit breaker protection (default: True)
+            circuit_breaker_threshold: Failures before opening circuit (default: 5)
         """
         self.persist_directory = Path(persist_directory) if persist_directory else None
         self._lock = threading.RLock()
 
-        # Initialize ChromaDB client
-        if self.persist_directory:
-            self.persist_directory.mkdir(parents=True, exist_ok=True)
-            settings = Settings(
-                persist_directory=str(self.persist_directory),
-                anonymized_telemetry=False,
-            )
-            self.client = chromadb.PersistentClient(settings=settings)
-        else:
-            self.client = chromadb.Client()
+        # Circuit breaker for fault tolerance
+        self.circuit_breaker = CircuitBreaker(
+            name="chromadb",
+            failure_threshold=circuit_breaker_threshold,
+            failure_window=60,  # 60 second window
+            recovery_timeout=30,  # 30 second recovery
+            expected_exception=Exception,
+        ) if enable_circuit_breaker else None
+
+        # Initialize ChromaDB client with retry
+        self.client = self._initialize_client()
 
         # Statistics
         self.stats = {
@@ -73,6 +85,8 @@ class VectorStore:
             "total_collections": 0,
             "total_adds": 0,
             "total_deletes": 0,
+            "circuit_breaker_opens": 0,
+            "circuit_breaker_errors": 0,
         }
 
         # Create or get collection
@@ -82,16 +96,103 @@ class VectorStore:
         )
 
         # Update stats
-        with self._lock:
-            self.stats["total_documents"] = self.collection.count()
-            self.stats["total_collections"] = len(self.client.list_collections())
+        try:
+            with self._lock:
+                self.stats["total_documents"] = self._safe_count()
+                self.stats["total_collections"] = len(self._safe_list_collections())
+        except Exception as e:
+            logger.warning(f"Failed to initialize stats: {e}")
+
+    def _initialize_client(self) -> chromadb.Client:
+        """Initialize ChromaDB client with retry logic.
+
+        Returns:
+            ChromaDB client instance
+
+        Raises:
+            Exception: If client initialization fails after retries
+        """
+        @chromadb_retry(max_attempts=3, initial_wait=1.0)
+        def create_client() -> chromadb.Client:
+            if self.persist_directory:
+                self.persist_directory.mkdir(parents=True, exist_ok=True)
+                settings = Settings(
+                    persist_directory=str(self.persist_directory),
+                    anonymized_telemetry=False,
+                )
+                return chromadb.PersistentClient(settings=settings)
+            else:
+                return chromadb.Client()
+
+        return create_client()
+
+    def _execute_with_protection(self, func, *args, **kwargs):
+        """Execute function with circuit breaker protection.
+
+        Args:
+            func: Function to execute
+            *args: Positional arguments
+            **kwargs: Keyword arguments
+
+        Returns:
+            Function result
+
+        Raises:
+            CircuitBreakerError: If circuit is open
+            Exception: Original exception from function
+        """
+        if self.circuit_breaker:
+            try:
+                return self.circuit_breaker.call(func, *args, **kwargs)
+            except CircuitBreakerError:
+                with self._lock:
+                    self.stats["circuit_breaker_errors"] += 1
+                    # Check if circuit just opened
+                    cb_stats = self.circuit_breaker.get_stats()
+                    if cb_stats["state"] == "open":
+                        self.stats["circuit_breaker_opens"] += 1
+                raise
+        else:
+            return func(*args, **kwargs)
+
+    def _safe_count(self) -> int:
+        """Get collection count with retry logic.
+
+        Returns:
+            Document count, or 0 on failure
+        """
+        @chromadb_retry(max_attempts=3)
+        def count_docs():
+            return self.collection.count()
+
+        try:
+            return self._execute_with_protection(count_docs)
+        except Exception as e:
+            logger.warning(f"Failed to count documents: {e}")
+            return 0
+
+    def _safe_list_collections(self) -> List:
+        """List collections with retry logic.
+
+        Returns:
+            List of collections, or empty list on failure
+        """
+        @chromadb_retry(max_attempts=3)
+        def list_colls():
+            return self.client.list_collections()
+
+        try:
+            return self._execute_with_protection(list_colls)
+        except Exception as e:
+            logger.warning(f"Failed to list collections: {e}")
+            return []
 
     def _get_or_create_collection(
         self,
         name: str,
         embedding_function: Optional[Any] = None,
     ) -> Any:
-        """Get existing collection or create new one.
+        """Get existing collection or create new one with retry logic.
 
         Args:
             name: Collection name
@@ -100,17 +201,21 @@ class VectorStore:
         Returns:
             ChromaDB collection
         """
-        try:
-            return self.client.get_collection(
-                name=name,
-                embedding_function=embedding_function,
-            )
-        except Exception:
-            return self.client.create_collection(
-                name=name,
-                embedding_function=embedding_function,
-                metadata={"created_at": time.time()},
-            )
+        @chromadb_retry(max_attempts=3, initial_wait=1.0)
+        def get_or_create():
+            try:
+                return self.client.get_collection(
+                    name=name,
+                    embedding_function=embedding_function,
+                )
+            except Exception:
+                return self.client.create_collection(
+                    name=name,
+                    embedding_function=embedding_function,
+                    metadata={"created_at": time.time()},
+                )
+
+        return self._execute_with_protection(get_or_create)
 
     def add(
         self,
@@ -173,7 +278,7 @@ class VectorStore:
         where_document: Optional[Dict[str, Any]] = None,
         include: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """Query the collection for similar vectors.
+        """Query the collection for similar vectors with circuit breaker protection.
 
         Args:
             query_embeddings: Query embedding(s)
@@ -184,6 +289,9 @@ class VectorStore:
 
         Returns:
             Dictionary with 'ids', 'distances', 'embeddings', 'metadatas', 'documents'
+
+        Raises:
+            CircuitBreakerError: If circuit breaker is open
         """
         tracer = get_tracer()
         with tracer.start_as_current_span("vector_store.query") as span:
@@ -415,16 +523,49 @@ class VectorStore:
             return self.collection.peek(limit=limit)
 
     def get_stats(self) -> Dict[str, Any]:
-        """Get vector store statistics.
+        """Get vector store statistics including circuit breaker status.
 
         Returns:
-            Dictionary with statistics
+            Dictionary with statistics and reliability metrics
         """
         with self._lock:
-            return {
+            stats = {
                 **self.stats,
                 "current_collection": self.collection_name,
                 "persist_directory": str(self.persist_directory) if self.persist_directory else None,
+            }
+
+            # Add circuit breaker stats if enabled
+            if self.circuit_breaker:
+                stats["circuit_breaker"] = self.circuit_breaker.get_stats()
+
+            return stats
+
+    def get_health(self) -> Dict[str, Any]:
+        """Get health status of vector store.
+
+        Returns:
+            Dictionary with health information
+        """
+        try:
+            # Test connectivity with timeout
+            count = self._safe_count()
+            circuit_state = self.circuit_breaker.state.value if self.circuit_breaker else "disabled"
+
+            return {
+                "status": "healthy" if circuit_state != "open" else "degraded",
+                "chromadb_available": circuit_state != "open",
+                "circuit_breaker_state": circuit_state,
+                "document_count": count,
+                "collection": self.collection_name,
+            }
+        except Exception as e:
+            logger.error(f"Health check failed: {e}")
+            return {
+                "status": "unhealthy",
+                "chromadb_available": False,
+                "circuit_breaker_state": self.circuit_breaker.state.value if self.circuit_breaker else "disabled",
+                "error": str(e),
             }
 
     def reset(self) -> None:
