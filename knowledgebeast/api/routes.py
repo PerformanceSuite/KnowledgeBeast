@@ -16,14 +16,16 @@ Provides 12 production-ready endpoints:
 """
 
 import asyncio
+import json
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Optional, AsyncGenerator, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
@@ -64,6 +66,7 @@ from knowledgebeast.core.config import KnowledgeBeastConfig
 from knowledgebeast.core.engine import KnowledgeBase
 from knowledgebeast.core.heartbeat import KnowledgeBaseHeartbeat
 from knowledgebeast.core.project_manager import ProjectManager
+from knowledgebeast.monitoring.health import ProjectHealthMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +99,7 @@ def get_executor() -> ThreadPoolExecutor:
 _kb_instance: Optional[KnowledgeBase] = None
 _heartbeat_instance: Optional[KnowledgeBaseHeartbeat] = None
 _project_manager_instance: Optional[ProjectManager] = None
+_health_monitor_instance: Optional[ProjectHealthMonitor] = None
 
 
 def get_kb_instance() -> KnowledgeBase:
@@ -162,6 +166,33 @@ def get_project_manager() -> ProjectManager:
             )
 
     return _project_manager_instance
+
+
+def get_health_monitor() -> ProjectHealthMonitor:
+    """Get or create the singleton ProjectHealthMonitor instance.
+
+    Returns:
+        ProjectHealthMonitor instance
+
+    Raises:
+        HTTPException: If initialization fails
+    """
+    global _health_monitor_instance
+
+    if _health_monitor_instance is None:
+        try:
+            logger.info("Initializing ProjectHealthMonitor instance...")
+            pm = get_project_manager()
+            _health_monitor_instance = ProjectHealthMonitor(pm)
+            logger.info("ProjectHealthMonitor initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize ProjectHealthMonitor: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to initialize health monitor: {str(e)}",
+            )
+
+    return _health_monitor_instance
 
 
 def cleanup_heartbeat() -> None:
@@ -1226,8 +1257,14 @@ async def project_query(
     Raises:
         HTTPException: If project not found or query fails
     """
+    # Track query timing and success for health monitoring
+    start_time = time.time()
+    success = False
+    cache_hit = False
+
     try:
         pm = get_project_manager()
+        health_monitor = get_health_monitor()
 
         # Verify project exists
         loop = asyncio.get_event_loop()
@@ -1245,7 +1282,9 @@ async def project_query(
 
         cached_results = cache.get(cache_key) if query_request.use_cache else None
         if cached_results is not None:
+            cache_hit = True
             logger.debug(f"Cache hit for project {project_id} query: {query_request.query}")
+            success = True
             return QueryResponse(
                 results=cached_results,
                 count=len(cached_results),
@@ -1298,6 +1337,8 @@ async def project_query(
         if query_request.use_cache:
             cache.put(cache_key, query_results)
 
+        success = True
+
         return QueryResponse(
             results=query_results,
             count=len(query_results),
@@ -1313,6 +1354,14 @@ async def project_query(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to query project: {str(e)}"
         )
+    finally:
+        # Record health metrics
+        latency_ms = (time.time() - start_time) * 1000
+        try:
+            health_monitor = get_health_monitor()
+            health_monitor.record_query(project_id, latency_ms, success, cache_hit)
+        except Exception as e:
+            logger.warning(f"Failed to record health metrics: {e}")
 
 
 @router_v2.post(
@@ -1434,3 +1483,217 @@ async def project_ingest(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to ingest into project: {str(e)}"
         )
+
+
+# ============================================================================
+# Project Health Monitoring Endpoints (API v2)
+# ============================================================================
+
+
+@router_v2.get(
+    "/{project_id}/health",
+    tags=["projects", "health"],
+    summary="Get project health status",
+    description="Get comprehensive health metrics and alerts for a specific project",
+)
+@limiter.limit("60/minute")
+async def get_project_health_endpoint(
+    request: Request,
+    project_id: str,
+    api_key: str = Depends(get_api_key)
+) -> Dict[str, Any]:
+    """Get health status for a specific project.
+
+    Returns:
+        Health status with metrics and alerts
+    """
+    try:
+        health_monitor = get_health_monitor()
+
+        # Get health status in thread pool
+        loop = asyncio.get_event_loop()
+        health = await loop.run_in_executor(
+            get_executor(),
+            health_monitor.get_project_health,
+            project_id
+        )
+
+        return health
+
+    except Exception as e:
+        logger.error(f"Project health error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get project health: {str(e)}"
+        )
+
+
+@router_v2.get(
+    "/health",
+    tags=["projects", "health"],
+    summary="Get all projects health status",
+    description="Get health status summary for all projects",
+)
+@limiter.limit("30/minute")
+async def get_all_projects_health_endpoint(
+    request: Request,
+    api_key: str = Depends(get_api_key)
+) -> Dict[str, Any]:
+    """Get health status for all projects.
+
+    Returns:
+        Summary and per-project health statuses
+    """
+    try:
+        health_monitor = get_health_monitor()
+
+        # Get all health statuses in thread pool
+        loop = asyncio.get_event_loop()
+        health = await loop.run_in_executor(
+            get_executor(),
+            health_monitor.get_all_projects_health
+        )
+
+        return health
+
+    except Exception as e:
+        logger.error(f"All projects health error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get all projects health: {str(e)}"
+        )
+
+
+@router_v2.post(
+    "/{project_id}/query/stream",
+    tags=["projects", "query"],
+    summary="Stream query results",
+    description="Stream query results using Server-Sent Events for large result sets",
+)
+@limiter.limit("20/minute")
+async def project_query_stream(
+    request: Request,
+    project_id: str,
+    query_request: ProjectQueryRequest,
+    api_key: str = Depends(get_api_key)
+) -> StreamingResponse:
+    """Stream query results using Server-Sent Events.
+
+    Args:
+        project_id: Project identifier
+        query_request: Query request
+
+    Returns:
+        StreamingResponse with Server-Sent Events
+
+    Raises:
+        HTTPException: If project not found or query fails
+    """
+    pm = get_project_manager()
+
+    # Verify project exists
+    loop = asyncio.get_event_loop()
+    project = await loop.run_in_executor(get_executor(), pm.get_project, project_id)
+
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project not found: {project_id}"
+        )
+
+    async def generate_results() -> AsyncGenerator[str, None]:
+        """Generate Server-Sent Events for query results."""
+        try:
+            # Send start event
+            start_event = {
+                "event": "start",
+                "timestamp": datetime.utcnow().isoformat(),
+                "project_id": project_id,
+                "query": query_request.query
+            }
+            yield f"data: {json.dumps(start_event)}\n\n"
+
+            # Get ChromaDB collection
+            collection = await loop.run_in_executor(
+                get_executor(),
+                pm.get_project_collection,
+                project_id
+            )
+
+            if not collection:
+                error_event = {
+                    "event": "error",
+                    "error": "Failed to get collection",
+                    "type": "CollectionError"
+                }
+                yield f"data: {json.dumps(error_event)}\n\n"
+                return
+
+            # Query ChromaDB in batches and stream results
+            batch_size = 10
+            total_requested = min(query_request.limit, 100)  # Cap at 100
+            results_sent = 0
+
+            # Execute query to get all results
+            def query_collection():
+                return collection.query(
+                    query_texts=[query_request.query],
+                    n_results=total_requested
+                )
+
+            chroma_results = await loop.run_in_executor(get_executor(), query_collection)
+
+            # Extract results
+            ids = chroma_results.get('ids', [[]])[0]
+            documents = chroma_results.get('documents', [[]])[0]
+            metadatas = chroma_results.get('metadatas', [[]])[0]
+            distances = chroma_results.get('distances', [[]])[0]
+
+            # Stream each result
+            for i, doc_id in enumerate(ids):
+                content = documents[i] if i < len(documents) else ""
+                metadata = metadatas[i] if i < len(metadatas) else {}
+                distance = distances[i] if i < len(distances) else 0
+
+                result_obj = {
+                    "event": "result",
+                    "data": {
+                        "id": doc_id,
+                        "document": content,
+                        "metadata": metadata,
+                        "score": 1 / (1 + distance),  # Convert distance to score
+                        "index": i
+                    }
+                }
+                yield f"data: {json.dumps(result_obj)}\n\n"
+                results_sent += 1
+
+                # Small delay to simulate streaming (optional)
+                await asyncio.sleep(0.01)
+
+            # Send completion event
+            done_event = {
+                "event": "done",
+                "total_results": results_sent,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            yield f"data: {json.dumps(done_event)}\n\n"
+
+        except Exception as e:
+            logger.error(f"Streaming error: {e}", exc_info=True)
+            error_obj = {
+                "event": "error",
+                "error": str(e),
+                "type": type(e).__name__
+            }
+            yield f"data: {json.dumps(error_obj)}\n\n"
+
+    return StreamingResponse(
+        generate_results(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        }
+    )
