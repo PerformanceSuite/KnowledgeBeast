@@ -197,8 +197,55 @@ class PostgresBackend(VectorBackend):
 
         return results
 
-    async def query_keyword(self, query, top_k=10, where=None):
-        raise NotImplementedError("Task 6")
+    async def query_keyword(
+        self,
+        query: str,
+        top_k: int = 10,
+        where: Optional[Dict[str, Any]] = None,
+    ) -> List[Tuple[str, float, Dict[str, Any]]]:
+        """Perform full-text keyword search using PostgreSQL.
+
+        Uses ts_rank for relevance scoring with to_tsvector/to_tsquery.
+
+        Args:
+            query: Search query string
+            top_k: Number of results to return
+            where: Optional metadata filter
+
+        Returns:
+            List of (doc_id, relevance_score, metadata) tuples
+
+        Raises:
+            RuntimeError: If backend not initialized
+        """
+        if not self._initialized:
+            raise RuntimeError("Backend not initialized. Call initialize() first.")
+
+        # Build WHERE clause for metadata filtering
+        where_clause = ""
+        params = [query, top_k]
+        if where:
+            where_clause = "AND metadata @> $3"
+            params.append(where)
+
+        # Full-text search with ts_rank
+        sql = f"""
+            SELECT
+                id,
+                ts_rank(to_tsvector('english', document), to_tsquery('english', $1)) as rank,
+                metadata
+            FROM {self.collection_name}_documents
+            WHERE to_tsvector('english', document) @@ to_tsquery('english', $1)
+            {where_clause}
+            ORDER BY rank DESC
+            LIMIT $2
+        """
+
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+
+        results = [(row["id"], float(row["rank"]), row["metadata"]) for row in rows]
+        return results
 
     async def query_hybrid(self, query_embedding, query_text, top_k=10, alpha=0.7, where=None):
         raise NotImplementedError("Task 7")

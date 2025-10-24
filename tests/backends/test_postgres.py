@@ -115,3 +115,38 @@ async def test_postgres_query_vector():
         assert results[0][2] == {"source": "test"}  # Metadata
 
         await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_postgres_query_keyword():
+    """PostgresBackend should perform full-text search."""
+    with patch('knowledgebeast.backends.postgres.asyncpg') as mock_asyncpg:
+        mock_pool = AsyncMock()
+        mock_conn = AsyncMock()
+        mock_conn.fetch = AsyncMock(return_value=[
+            {"id": "doc1", "rank": 0.9, "metadata": {"source": "test"}},
+            {"id": "doc2", "rank": 0.5, "metadata": {"source": "prod"}}
+        ])
+        mock_pool.acquire = MagicMock(return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=mock_conn),
+            __aexit__=AsyncMock()
+        ))
+        mock_asyncpg.create_pool = AsyncMock(return_value=mock_pool)
+
+        backend = PostgresBackend(
+            connection_string="postgresql://test:test@localhost/test",
+            collection_name="test"
+        )
+        await backend.initialize()
+
+        # Query
+        results = await backend.query_keyword(
+            query="machine learning",
+            top_k=2
+        )
+
+        assert len(results) == 2
+        assert results[0][0] == "doc1"
+        assert results[0][1] == 0.9  # Rank score
+
+        await backend.close()
