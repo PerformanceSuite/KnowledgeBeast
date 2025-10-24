@@ -9,13 +9,14 @@ Available backends:
 """
 
 from knowledgebeast.backends.base import VectorBackend
-from knowledgebeast.backends.chromadb import ChromaDBBackend
+# ChromaDBBackend will be implemented in Task 4
+# from knowledgebeast.backends.chromadb import ChromaDBBackend
 
 # PostgresBackend will be implemented in Week 2
 # from knowledgebeast.backends.postgres import PostgresBackend
 
 __all__ = [
     "VectorBackend",
-    "ChromaDBBackend",
+    # "ChromaDBBackend",  # Coming in Task 4
     # "PostgresBackend",  # Coming in Week 2
 ]
