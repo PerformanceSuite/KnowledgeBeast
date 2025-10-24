@@ -317,8 +317,53 @@ class PostgresBackend(VectorBackend):
         return [(doc_id, score, metadata_map.get(doc_id, {}))
                 for doc_id, score in sorted_results[:top_k]]
 
-    async def delete_documents(self, ids=None, where=None):
-        raise NotImplementedError("Task 8")
+    async def delete_documents(
+        self,
+        ids: Optional[List[str]] = None,
+        where: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        """Delete documents from the database.
+
+        Args:
+            ids: List of document IDs to delete
+            where: Metadata filter (e.g., {"source": "test"})
+
+        Returns:
+            Number of documents deleted
+
+        Raises:
+            ValueError: If neither ids nor where specified
+            RuntimeError: If backend not initialized
+        """
+        if not self._initialized:
+            raise RuntimeError("Backend not initialized. Call initialize() first.")
+
+        if ids is None and where is None:
+            raise ValueError("Must specify either ids or where filter")
+
+        # Build DELETE SQL
+        where_clauses = []
+        params = []
+
+        if ids:
+            placeholders = ", ".join(f"${i+1}" for i in range(len(ids)))
+            where_clauses.append(f"id IN ({placeholders})")
+            params.extend(ids)
+
+        if where:
+            where_clauses.append(f"metadata @> ${len(params) + 1}")
+            params.append(where)
+
+        where_clause = " AND ".join(where_clauses)
+        sql = f"DELETE FROM {self.collection_name}_documents WHERE {where_clause}"
+
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(sql, *params)
+
+        # Parse result string like "DELETE 5" -> 5
+        count = int(result.split()[-1])
+        logger.debug(f"Deleted {count} documents from '{self.collection_name}'")
+        return count
 
     async def get_statistics(self):
         raise NotImplementedError("Task 9")

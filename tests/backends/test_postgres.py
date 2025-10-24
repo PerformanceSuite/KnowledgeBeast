@@ -189,3 +189,31 @@ async def test_postgres_query_hybrid():
         assert all(len(r) == 3 for r in results)  # (id, score, metadata)
 
         await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_postgres_delete_documents():
+    """PostgresBackend should delete documents by IDs or metadata filter."""
+    with patch('knowledgebeast.backends.postgres.asyncpg') as mock_asyncpg:
+        mock_pool = AsyncMock()
+        mock_conn = AsyncMock()
+        mock_conn.execute = AsyncMock(return_value="DELETE 2")
+        mock_pool.acquire = MagicMock(return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=mock_conn),
+            __aexit__=AsyncMock()
+        ))
+        mock_asyncpg.create_pool = AsyncMock(return_value=mock_pool)
+
+        backend = PostgresBackend(
+            connection_string="postgresql://test:test@localhost/test",
+            collection_name="test"
+        )
+        await backend.initialize()
+
+        # Delete by IDs
+        result = await backend.delete_documents(ids=["doc1", "doc2"])
+
+        assert result == 2
+        assert mock_conn.execute.called
+
+        await backend.close()
