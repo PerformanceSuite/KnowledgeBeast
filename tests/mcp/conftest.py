@@ -484,6 +484,86 @@ def mock_knowledgebeast_tools(mock_project_manager, mock_embedding_engine, mock_
             "file_size_bytes": output_file.stat().st_size
         }
 
+    async def kb_import_project(file_path, project_name=None):
+        """Mock import project functionality."""
+        import json
+        from pathlib import Path
+
+        # Check file exists
+        import_file = Path(file_path)
+        if not import_file.exists():
+            return {"error": f"File not found: {file_path}"}
+
+        # Load export data
+        try:
+            with open(import_file) as f:
+                export_data = json.load(f)
+        except json.JSONDecodeError as e:
+            return {"error": f"Invalid JSON file: {str(e)}"}
+
+        # Validate structure
+        required_keys = ["version", "project", "documents", "embeddings"]
+        if not all(key in export_data for key in required_keys):
+            return {"error": "Invalid export file structure"}
+
+        # Get original project data
+        original_project = export_data["project"]
+
+        # Generate project name
+        if not project_name:
+            project_name = f"{original_project['name']} (imported)"
+
+        # Create new project
+        new_project = mock_project_manager.create_project(
+            name=project_name,
+            description=original_project.get("description", ""),
+            embedding_model=original_project.get("embedding_model", "all-MiniLM-L6-v2"),
+            metadata={
+                **original_project.get("metadata", {}),
+                "imported_from": original_project["project_id"],
+                "imported_at": "2025-10-24T00:00:00"
+            }
+        )
+
+        # Import documents and embeddings
+        doc_count = 0
+        if export_data["documents"]:
+            ids = []
+            documents = []
+            metadatas = []
+            embeddings = []
+
+            for doc in export_data["documents"]:
+                ids.append(doc["id"])
+                documents.append(doc["content"])
+                metadatas.append(doc.get("metadata", {}))
+
+            # Get embeddings
+            embedding_map = {e["id"]: e["vector"] for e in export_data["embeddings"]}
+            for doc_id in ids:
+                if doc_id in embedding_map:
+                    embeddings.append(embedding_map[doc_id])
+                else:
+                    embeddings.append(MOCK_EMBEDDING)
+
+            # Add to mock vector store
+            mock_vector_store.add(
+                ids=ids,
+                embeddings=embeddings,
+                documents=documents,
+                metadatas=metadatas
+            )
+
+            doc_count = len(ids)
+
+        return {
+            "project_id": new_project.project_id,
+            "name": new_project.name,
+            "document_count": doc_count,
+            "source_file": file_path,
+            "original_project_id": original_project["project_id"]
+        }
+
     # Attach methods to mock
     tools.kb_create_project = kb_create_project
     tools.kb_list_projects = kb_list_projects
@@ -493,6 +573,7 @@ def mock_knowledgebeast_tools(mock_project_manager, mock_embedding_engine, mock_
     tools.kb_list_documents = kb_list_documents
     tools.kb_search = kb_search
     tools.kb_export_project = kb_export_project
+    tools.kb_import_project = kb_import_project
 
     return tools
 

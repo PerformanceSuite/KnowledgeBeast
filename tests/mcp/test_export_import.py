@@ -137,7 +137,7 @@ async def test_import_project_basic(mcp_tools, tmp_path):
 
     # Verify document was imported
     docs = await mcp_tools.kb_list_documents(project_id=import_result["project_id"])
-    assert docs["total"] == 1
+    assert docs["total_documents"] == 1
 
 
 @pytest.mark.asyncio

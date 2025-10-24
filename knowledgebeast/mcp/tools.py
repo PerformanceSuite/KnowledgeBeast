@@ -878,3 +878,122 @@ class KnowledgeBeastTools:
         except Exception as e:
             logger.error(f"Export error: {e}", exc_info=True)
             return {"error": str(e)}
+
+    async def kb_import_project(
+        self,
+        file_path: str,
+        project_name: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Import a project from an exported file.
+
+        Args:
+            file_path: Path to export file (JSON or YAML)
+            project_name: Optional name for imported project
+
+        Returns:
+            Import result with new project ID and statistics
+        """
+        try:
+            # Check file exists
+            import_file = Path(file_path)
+            if not import_file.exists():
+                return {"error": f"File not found: {file_path}"}
+
+            # Determine format from extension
+            format_type = "json" if import_file.suffix == ".json" else "yaml"
+
+            # Load export data
+            try:
+                if format_type == "json":
+                    with open(import_file) as f:
+                        export_data = json.load(f)
+                else:
+                    import yaml
+                    with open(import_file) as f:
+                        export_data = yaml.safe_load(f)
+            except (json.JSONDecodeError, yaml.YAMLError) as e:
+                return {"error": f"Invalid {format_type.upper()} file: {str(e)}"}
+
+            # Validate export data structure
+            required_keys = ["version", "project", "documents", "embeddings"]
+            if not all(key in export_data for key in required_keys):
+                return {"error": "Invalid export file structure"}
+
+            # Get original project data
+            original_project = export_data["project"]
+
+            # Generate new project name if not provided
+            if not project_name:
+                project_name = f"{original_project['name']} (imported)"
+
+            # Create new project
+            new_project = self.project_manager.create_project(
+                name=project_name,
+                description=original_project.get("description", ""),
+                embedding_model=original_project.get("embedding_model", "all-MiniLM-L6-v2"),
+                metadata={
+                    **original_project.get("metadata", {}),
+                    "imported_from": original_project["project_id"],
+                    "imported_at": datetime.utcnow().isoformat()
+                }
+            )
+
+            # Get vector store for new project
+            vector_store = VectorStore(
+                persist_directory=self.config.chroma_path,
+                collection_name=new_project.collection_name
+            )
+
+            embedding_engine = EmbeddingEngine(
+                model_name=new_project.embedding_model,
+                cache_size=self.config.cache_capacity
+            )
+
+            # Import documents and embeddings
+            doc_count = 0
+            if export_data["documents"]:
+                ids = []
+                documents = []
+                metadatas = []
+                embeddings = []
+
+                # Build parallel arrays for ChromaDB
+                for doc in export_data["documents"]:
+                    ids.append(doc["id"])
+                    documents.append(doc["content"])
+                    metadatas.append(doc.get("metadata", {}))
+
+                # Get embeddings (use existing if available, otherwise regenerate)
+                embedding_map = {e["id"]: e["vector"] for e in export_data["embeddings"]}
+                for doc_id in ids:
+                    if doc_id in embedding_map:
+                        embeddings.append(embedding_map[doc_id])
+                    else:
+                        # Regenerate embedding for this document
+                        idx = ids.index(doc_id)
+                        vec = embedding_engine.embed(documents[idx])
+                        embeddings.append(vec.tolist())
+
+                # Add to collection
+                vector_store.collection.add(
+                    ids=ids,
+                    documents=documents,
+                    metadatas=metadatas,
+                    embeddings=embeddings
+                )
+
+                doc_count = len(ids)
+
+            logger.info(f"Imported project: {new_project.project_id} ({doc_count} documents)")
+
+            return {
+                "project_id": new_project.project_id,
+                "name": new_project.name,
+                "document_count": doc_count,
+                "source_file": file_path,
+                "original_project_id": original_project["project_id"]
+            }
+
+        except Exception as e:
+            logger.error(f"Import error: {e}", exc_info=True)
+            return {"error": str(e)}

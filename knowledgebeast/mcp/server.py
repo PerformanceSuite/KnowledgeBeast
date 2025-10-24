@@ -289,6 +289,26 @@ def create_server(config: MCPConfig) -> FastMCP:
         )
 
     @mcp.tool()
+    async def kb_import_project(
+        file_path: str, project_name: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Import a project from a file.
+
+        Import a previously exported project or load from a template.
+
+        Args:
+            file_path: Path to import file (JSON or YAML)
+            project_name: Optional name for imported project (generates if not provided)
+
+        Returns:
+            Import result with new project ID and statistics
+        """
+        return await tools.kb_import_project(
+            file_path=file_path,
+            project_name=project_name
+        )
+
+    @mcp.tool()
     async def kb_health_check() -> Dict[str, Any]:
         """Perform a health check on the KnowledgeBeast system.
 
