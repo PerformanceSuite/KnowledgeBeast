@@ -144,8 +144,58 @@ class PostgresBackend(VectorBackend):
 
         logger.debug(f"Added {len(ids)} documents to '{self.collection_name}'")
 
-    async def query_vector(self, query_embedding, top_k=10, where=None):
-        raise NotImplementedError("Task 5")
+    async def query_vector(
+        self,
+        query_embedding: List[float],
+        top_k: int = 10,
+        where: Optional[Dict[str, Any]] = None,
+    ) -> List[Tuple[str, float, Dict[str, Any]]]:
+        """Perform vector similarity search using pgvector.
+
+        Uses cosine distance for similarity (lower distance = higher similarity).
+
+        Args:
+            query_embedding: Query vector
+            top_k: Number of results to return
+            where: Optional metadata filter (e.g., {"source": "docs"})
+
+        Returns:
+            List of (doc_id, similarity_score, metadata) tuples
+
+        Raises:
+            RuntimeError: If backend not initialized
+        """
+        if not self._initialized:
+            raise RuntimeError("Backend not initialized. Call initialize() first.")
+
+        # Build WHERE clause for metadata filtering
+        where_clause = ""
+        params = [query_embedding, top_k]
+        if where:
+            # Simple equality filter: metadata @> '{"key": "value"}'
+            where_clause = "WHERE metadata @> $3"
+            params.append(where)
+
+        # Query with cosine distance (pgvector operator: <=>)
+        sql = f"""
+            SELECT id, embedding <=> $1 as distance, metadata
+            FROM {self.collection_name}_documents
+            {where_clause}
+            ORDER BY distance
+            LIMIT $2
+        """
+
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+
+        # Convert distance to similarity score
+        results = []
+        for row in rows:
+            # Similarity = 1 / (1 + distance)
+            similarity = 1.0 / (1.0 + row["distance"])
+            results.append((row["id"], similarity, row["metadata"]))
+
+        return results
 
     async def query_keyword(self, query, top_k=10, where=None):
         raise NotImplementedError("Task 6")

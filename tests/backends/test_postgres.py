@@ -79,3 +79,39 @@ async def test_postgres_add_documents():
         assert "ON CONFLICT (id) DO UPDATE" in sql
 
         await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_postgres_query_vector():
+    """PostgresBackend should perform vector similarity search."""
+    with patch('knowledgebeast.backends.postgres.asyncpg') as mock_asyncpg:
+        mock_pool = AsyncMock()
+        mock_conn = AsyncMock()
+        mock_conn.fetch = AsyncMock(return_value=[
+            {"id": "doc1", "distance": 0.1, "metadata": {"source": "test"}},
+            {"id": "doc2", "distance": 0.3, "metadata": {"source": "prod"}}
+        ])
+        mock_pool.acquire = MagicMock(return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=mock_conn),
+            __aexit__=AsyncMock()
+        ))
+        mock_asyncpg.create_pool = AsyncMock(return_value=mock_pool)
+
+        backend = PostgresBackend(
+            connection_string="postgresql://test:test@localhost/test",
+            collection_name="test"
+        )
+        await backend.initialize()
+
+        # Query
+        results = await backend.query_vector(
+            query_embedding=[0.1, 0.2, 0.3],
+            top_k=2
+        )
+
+        assert len(results) == 2
+        assert results[0][0] == "doc1"  # ID
+        assert results[0][1] > results[1][1]  # Higher similarity for closer vector
+        assert results[0][2] == {"source": "test"}  # Metadata
+
+        await backend.close()
