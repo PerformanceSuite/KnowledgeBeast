@@ -819,6 +819,8 @@ class KnowledgeBeastTools:
             if not project:
                 return {"error": f"Project not found: {project_id}"}
 
+            logger.info(f"Exporting project {project_id}...")
+
             # Get project documents from ChromaDB
             vector_store = VectorStore(
                 persist_directory=self.config.chroma_path,
@@ -829,6 +831,8 @@ class KnowledgeBeastTools:
             collection_data = vector_store.collection.get(
                 include=["documents", "metadatas", "embeddings"]
             )
+
+            logger.info(f"Fetching {len(collection_data.get('ids', []))} documents from ChromaDB...")
 
             # Build export data structure
             export_data = {
@@ -858,6 +862,8 @@ class KnowledgeBeastTools:
             output_file = Path(output_path)
             output_file.parent.mkdir(parents=True, exist_ok=True)
 
+            logger.info(f"Writing export file: {output_file}")
+
             if format == "zip":
                 # Create ZIP with JSON inside
                 with zipfile.ZipFile(output_file, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -871,6 +877,7 @@ class KnowledgeBeastTools:
                 with open(output_file, 'w') as f:
                     yaml.safe_dump(export_data, f)
 
+            logger.info(f"Export complete: {output_file.stat().st_size} bytes")
             logger.info(f"Exported project {project_id}: {len(export_data['documents'])} documents")
 
             return {
@@ -905,6 +912,8 @@ class KnowledgeBeastTools:
             if not import_file.exists():
                 return {"error": f"File not found: {file_path}"}
 
+            logger.info(f"Importing from: {file_path}")
+
             # Determine format from extension
             format_type = "zip" if import_file.suffix == ".zip" else (
                 "json" if import_file.suffix == ".json" else "yaml"
@@ -938,6 +947,8 @@ class KnowledgeBeastTools:
             if not project_name:
                 project_name = f"{original_project['name']} (imported)"
 
+            logger.info(f"Creating new project: {project_name}")
+
             # Create new project
             new_project = self.project_manager.create_project(
                 name=project_name,
@@ -949,6 +960,8 @@ class KnowledgeBeastTools:
                     "imported_at": datetime.utcnow().isoformat()
                 }
             )
+
+            logger.info(f"Importing {len(export_data['documents'])} documents...")
 
             # Get vector store for new project
             vector_store = VectorStore(
@@ -996,6 +1009,7 @@ class KnowledgeBeastTools:
 
                 doc_count = len(ids)
 
+            logger.info(f"Import complete: {new_project.project_id}")
             logger.info(f"Imported project: {new_project.project_id} ({doc_count} documents)")
 
             return {
