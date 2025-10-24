@@ -350,7 +350,7 @@ def create_server(config: MCPConfig) -> FastMCP:
 
     logger.info(
         f"MCP server created: {config.server_name} v{config.server_version} "
-        f"(12 tools registered)"
+        f"(14 tools registered)"
     )
 
     return mcp
