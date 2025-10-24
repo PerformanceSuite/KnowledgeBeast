@@ -217,3 +217,32 @@ async def test_postgres_delete_documents():
         assert mock_conn.execute.called
 
         await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_postgres_get_statistics():
+    """PostgresBackend should return statistics about the collection."""
+    with patch('knowledgebeast.backends.postgres.asyncpg') as mock_asyncpg:
+        mock_pool = AsyncMock()
+        mock_conn = AsyncMock()
+        mock_conn.fetchval = AsyncMock(return_value=100)
+        mock_pool.acquire = MagicMock(return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=mock_conn),
+            __aexit__=AsyncMock()
+        ))
+        mock_asyncpg.create_pool = AsyncMock(return_value=mock_pool)
+
+        backend = PostgresBackend(
+            connection_string="postgresql://test:test@localhost/test",
+            collection_name="test"
+        )
+        await backend.initialize()
+
+        # Get stats
+        stats = await backend.get_statistics()
+
+        assert "document_count" in stats
+        assert stats["document_count"] == 100
+        assert "collection_name" in stats
+
+        await backend.close()

@@ -365,8 +365,29 @@ class PostgresBackend(VectorBackend):
         logger.debug(f"Deleted {count} documents from '{self.collection_name}'")
         return count
 
-    async def get_statistics(self):
-        raise NotImplementedError("Task 9")
+    async def get_statistics(self) -> Dict[str, Any]:
+        """Get statistics about the collection.
+
+        Returns:
+            Dictionary with stats like document count, collection name, etc.
+
+        Raises:
+            RuntimeError: If backend not initialized
+        """
+        if not self._initialized:
+            raise RuntimeError("Backend not initialized. Call initialize() first.")
+
+        sql = f"SELECT COUNT(*) FROM {self.collection_name}_documents"
+
+        async with self.pool.acquire() as conn:
+            doc_count = await conn.fetchval(sql)
+
+        return {
+            "document_count": doc_count,
+            "collection_name": self.collection_name,
+            "embedding_dimension": self.embedding_dimension,
+            "backend_type": "postgres",
+        }
 
     async def get_health(self):
         raise NotImplementedError("Task 10")
