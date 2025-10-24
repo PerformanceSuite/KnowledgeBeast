@@ -247,8 +247,75 @@ class PostgresBackend(VectorBackend):
         results = [(row["id"], float(row["rank"]), row["metadata"]) for row in rows]
         return results
 
-    async def query_hybrid(self, query_embedding, query_text, top_k=10, alpha=0.7, where=None):
-        raise NotImplementedError("Task 7")
+    async def query_hybrid(
+        self,
+        query_embedding: List[float],
+        query_text: str,
+        top_k: int = 10,
+        alpha: float = 0.7,
+        where: Optional[Dict[str, Any]] = None,
+    ) -> List[Tuple[str, float, Dict[str, Any]]]:
+        """Perform hybrid search combining vector and keyword search.
+
+        Uses Reciprocal Rank Fusion (RRF) to combine results.
+
+        Args:
+            query_embedding: Query vector for semantic search
+            query_text: Query string for keyword search
+            top_k: Number of results to return
+            alpha: Weight for vector search (0-1)
+            where: Optional metadata filter
+
+        Returns:
+            List of (doc_id, combined_score, metadata) tuples
+
+        Raises:
+            ValueError: If alpha not in [0, 1]
+            RuntimeError: If backend not initialized
+        """
+        if not 0 <= alpha <= 1:
+            raise ValueError(f"alpha must be in [0, 1], got {alpha}")
+
+        if not self._initialized:
+            raise RuntimeError("Backend not initialized. Call initialize() first.")
+
+        # Get both result sets (expand to 20 for better RRF coverage)
+        vector_results = await self.query_vector(query_embedding, top_k=20, where=where)
+        keyword_results = await self.query_keyword(query_text, top_k=20, where=where)
+
+        # Reciprocal Rank Fusion
+        k = 60  # RRF constant
+
+        # Build ranking maps
+        vector_ranks = {doc_id: i + 1 for i, (doc_id, _, _) in enumerate(vector_results)}
+        keyword_ranks = {doc_id: i + 1 for i, (doc_id, _, _) in enumerate(keyword_results)}
+
+        # Collect all unique doc IDs
+        all_ids = set(vector_ranks.keys()) | set(keyword_ranks.keys())
+
+        # Build metadata maps
+        vector_meta = {doc_id: meta for doc_id, _, meta in vector_results}
+        keyword_meta = {doc_id: meta for doc_id, _, meta in keyword_results}
+
+        # Compute RRF scores
+        rrf_scores = {}
+        metadata_map = {}
+
+        for doc_id in all_ids:
+            vec_rank = vector_ranks.get(doc_id, 1000)  # Large rank if not found
+            key_rank = keyword_ranks.get(doc_id, 1000)
+
+            rrf_score = (
+                alpha * (1.0 / (k + vec_rank)) +
+                (1 - alpha) * (1.0 / (k + key_rank))
+            )
+            rrf_scores[doc_id] = rrf_score
+            metadata_map[doc_id] = vector_meta.get(doc_id) or keyword_meta.get(doc_id, {})
+
+        # Sort by RRF score and return top_k
+        sorted_results = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+        return [(doc_id, score, metadata_map.get(doc_id, {}))
+                for doc_id, score in sorted_results[:top_k]]
 
     async def delete_documents(self, ids=None, where=None):
         raise NotImplementedError("Task 8")

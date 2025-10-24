@@ -150,3 +150,42 @@ async def test_postgres_query_keyword():
         assert results[0][1] == 0.9  # Rank score
 
         await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_postgres_query_hybrid():
+    """PostgresBackend should perform hybrid search with RRF."""
+    with patch('knowledgebeast.backends.postgres.asyncpg') as mock_asyncpg:
+        mock_pool = AsyncMock()
+        mock_conn = AsyncMock()
+
+        # Mock vector results
+        mock_conn.fetch = AsyncMock(side_effect=[
+            [{"id": "doc1", "distance": 0.1, "metadata": {"source": "test"}}],
+            [{"id": "doc1", "rank": 0.9, "metadata": {"source": "test"}}]
+        ])
+
+        mock_pool.acquire = MagicMock(return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=mock_conn),
+            __aexit__=AsyncMock()
+        ))
+        mock_asyncpg.create_pool = AsyncMock(return_value=mock_pool)
+
+        backend = PostgresBackend(
+            connection_string="postgresql://test:test@localhost/test",
+            collection_name="test"
+        )
+        await backend.initialize()
+
+        # Query
+        results = await backend.query_hybrid(
+            query_embedding=[0.1, 0.2, 0.3],
+            query_text="machine learning",
+            top_k=1,
+            alpha=0.7
+        )
+
+        assert len(results) <= 1
+        assert all(len(r) == 3 for r in results)  # (id, score, metadata)
+
+        await backend.close()
