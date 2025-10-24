@@ -427,6 +427,7 @@ def mock_knowledgebeast_tools(mock_project_manager, mock_embedding_engine, mock_
     async def kb_export_project(project_id, output_path, format="json"):
         """Mock export project functionality."""
         import json
+        import zipfile
         from pathlib import Path
 
         project = mock_project_manager.get_project(project_id)
@@ -472,7 +473,11 @@ def mock_knowledgebeast_tools(mock_project_manager, mock_embedding_engine, mock_
         output_file = Path(output_path)
         output_file.parent.mkdir(parents=True, exist_ok=True)
 
-        if format == "json":
+        if format == "zip":
+            # Create ZIP with JSON inside
+            with zipfile.ZipFile(output_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("project.json", json.dumps(export_data, indent=2))
+        elif format == "json":
             with open(output_file, 'w') as f:
                 json.dump(export_data, f, indent=2)
 
@@ -487,6 +492,7 @@ def mock_knowledgebeast_tools(mock_project_manager, mock_embedding_engine, mock_
     async def kb_import_project(file_path, project_name=None):
         """Mock import project functionality."""
         import json
+        import zipfile
         from pathlib import Path
 
         # Check file exists
@@ -494,12 +500,19 @@ def mock_knowledgebeast_tools(mock_project_manager, mock_embedding_engine, mock_
         if not import_file.exists():
             return {"error": f"File not found: {file_path}"}
 
+        # Determine format
+        format_type = "zip" if import_file.suffix == ".zip" else "json"
+
         # Load export data
         try:
-            with open(import_file) as f:
-                export_data = json.load(f)
-        except json.JSONDecodeError as e:
-            return {"error": f"Invalid JSON file: {str(e)}"}
+            if format_type == "zip":
+                with zipfile.ZipFile(import_file, 'r') as zf:
+                    export_data = json.loads(zf.read("project.json"))
+            else:
+                with open(import_file) as f:
+                    export_data = json.load(f)
+        except (json.JSONDecodeError, zipfile.BadZipFile) as e:
+            return {"error": f"Invalid {format_type.upper()} file: {str(e)}"}
 
         # Validate structure
         required_keys = ["version", "project", "documents", "embeddings"]

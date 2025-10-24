@@ -188,3 +188,43 @@ async def test_import_project_auto_name(mcp_tools, tmp_path):
     projects = await mcp_tools.kb_list_projects()
     imported = next(p for p in projects if p["project_id"] == import_result["project_id"])
     assert "import" in imported["name"].lower()
+
+
+@pytest.mark.asyncio
+async def test_export_import_zip_format(mcp_tools, tmp_path):
+    """Test export/import with ZIP compression."""
+    # Create project with multiple documents
+    result = await mcp_tools.kb_create_project(name="Zip Test")
+    project_id = result["project_id"]
+
+    for i in range(5):
+        await mcp_tools.kb_ingest(
+            project_id=project_id,
+            content=f"Document {i} content " * 100,  # Large content
+            metadata={"index": i}
+        )
+
+    # Export as ZIP
+    export_path = tmp_path / "export.zip"
+    export_result = await mcp_tools.kb_export_project(
+        project_id=project_id,
+        output_path=str(export_path),
+        format="zip"
+    )
+
+    assert "error" not in export_result
+    assert export_path.exists()
+    assert export_path.suffix == ".zip"
+
+    # Verify it's a valid ZIP
+    import zipfile
+    assert zipfile.is_zipfile(export_path)
+
+    # Import from ZIP
+    import_result = await mcp_tools.kb_import_project(
+        file_path=str(export_path),
+        project_name="Imported from ZIP"
+    )
+
+    assert "error" not in import_result
+    assert import_result["document_count"] == 5

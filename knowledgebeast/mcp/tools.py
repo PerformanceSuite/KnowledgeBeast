@@ -3,6 +3,7 @@
 import json
 import logging
 import time
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -810,8 +811,8 @@ class KnowledgeBeastTools:
         """
         try:
             # Validate format
-            if format not in ["json", "yaml"]:
-                return {"error": f"Unsupported format: {format}. Use 'json' or 'yaml'."}
+            if format not in ["json", "yaml", "zip"]:
+                return {"error": f"Unsupported format: {format}. Use 'json', 'yaml', or 'zip'."}
 
             # Get project
             project = self.project_manager.get_project(project_id)
@@ -857,7 +858,12 @@ class KnowledgeBeastTools:
             output_file = Path(output_path)
             output_file.parent.mkdir(parents=True, exist_ok=True)
 
-            if format == "json":
+            if format == "zip":
+                # Create ZIP with JSON inside
+                with zipfile.ZipFile(output_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    # Write project data
+                    zf.writestr("project.json", json.dumps(export_data, indent=2))
+            elif format == "json":
                 with open(output_file, 'w') as f:
                     json.dump(export_data, f, indent=2)
             elif format == "yaml":
@@ -900,18 +906,24 @@ class KnowledgeBeastTools:
                 return {"error": f"File not found: {file_path}"}
 
             # Determine format from extension
-            format_type = "json" if import_file.suffix == ".json" else "yaml"
+            format_type = "zip" if import_file.suffix == ".zip" else (
+                "json" if import_file.suffix == ".json" else "yaml"
+            )
 
             # Load export data
             try:
-                if format_type == "json":
+                if format_type == "zip":
+                    with zipfile.ZipFile(import_file, 'r') as zf:
+                        # Read project.json from ZIP
+                        export_data = json.loads(zf.read("project.json"))
+                elif format_type == "json":
                     with open(import_file) as f:
                         export_data = json.load(f)
                 else:
                     import yaml
                     with open(import_file) as f:
                         export_data = yaml.safe_load(f)
-            except (json.JSONDecodeError, yaml.YAMLError) as e:
+            except (json.JSONDecodeError, yaml.YAMLError, zipfile.BadZipFile) as e:
                 return {"error": f"Invalid {format_type.upper()} file: {str(e)}"}
 
             # Validate export data structure
