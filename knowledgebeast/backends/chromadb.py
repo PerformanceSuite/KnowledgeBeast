@@ -174,6 +174,10 @@ class ChromaDBBackend(VectorBackend):
         # Collect all unique doc IDs
         all_ids = set(vector_ranks.keys()) | set(keyword_ranks.keys())
 
+        # Build metadata maps once - O(n)
+        vector_meta = {doc_id: meta for doc_id, _, meta in vector_results}
+        keyword_meta = {doc_id: meta for doc_id, _, meta in keyword_results}
+
         # Compute RRF scores
         rrf_scores = {}
         metadata_map = {}
@@ -188,16 +192,8 @@ class ChromaDBBackend(VectorBackend):
             )
             rrf_scores[doc_id] = rrf_score
 
-            # Get metadata from either result
-            for _, _, meta in vector_results:
-                if _ == doc_id:
-                    metadata_map[doc_id] = meta
-                    break
-            else:
-                for _, _, meta in keyword_results:
-                    if _ == doc_id:
-                        metadata_map[doc_id] = meta
-                        break
+            # Get metadata from either result (O(1) lookup)
+            metadata_map[doc_id] = vector_meta.get(doc_id) or keyword_meta.get(doc_id, {})
 
         # Sort by RRF score and return top_k
         sorted_results = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
@@ -218,7 +214,7 @@ class ChromaDBBackend(VectorBackend):
             delete_count = len(ids)
         else:
             results = self.vector_store.collection.get(where=where, limit=None)
-            delete_count = len(results["ids"])
+            delete_count = len(results.get("ids", []))
 
         # Delete
         self.vector_store.delete(ids=ids, where=where)
