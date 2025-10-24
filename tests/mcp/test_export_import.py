@@ -94,3 +94,97 @@ async def test_export_empty_project(mcp_tools, tmp_path):
 
     assert len(export_data["documents"]) == 0
     assert len(export_data["embeddings"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_import_project_basic(mcp_tools, tmp_path):
+    """Test basic project import from JSON."""
+    # Create and export a project first
+    create_result = await mcp_tools.kb_create_project(
+        name="Original Project",
+        description="To be exported and imported"
+    )
+    original_id = create_result["project_id"]
+
+    await mcp_tools.kb_ingest(
+        project_id=original_id,
+        content="Test document content",
+        metadata={"source": "test"}
+    )
+
+    export_path = tmp_path / "export.json"
+    await mcp_tools.kb_export_project(
+        project_id=original_id,
+        output_path=str(export_path),
+        format="json"
+    )
+
+    # Import as new project
+    import_result = await mcp_tools.kb_import_project(
+        file_path=str(export_path),
+        project_name="Imported Project"
+    )
+
+    assert "error" not in import_result
+    assert import_result["project_id"] != original_id  # New ID
+    assert import_result["document_count"] == 1
+    assert import_result["source_file"] == str(export_path)
+
+    # Verify imported project exists and has data
+    projects = await mcp_tools.kb_list_projects()
+    imported_project = next(p for p in projects if p["project_id"] == import_result["project_id"])
+    assert imported_project["name"] == "Imported Project"
+
+    # Verify document was imported
+    docs = await mcp_tools.kb_list_documents(project_id=import_result["project_id"])
+    assert docs["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_import_project_file_not_found(mcp_tools):
+    """Test import fails for nonexistent file."""
+    result = await mcp_tools.kb_import_project(
+        file_path="/nonexistent/file.json"
+    )
+
+    assert "error" in result
+    assert "not found" in result["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_import_project_invalid_json(mcp_tools, tmp_path):
+    """Test import fails for invalid JSON."""
+    bad_file = tmp_path / "bad.json"
+    bad_file.write_text("{invalid json")
+
+    result = await mcp_tools.kb_import_project(
+        file_path=str(bad_file)
+    )
+
+    assert "error" in result
+    assert "invalid" in result["error"].lower() or "parse" in result["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_import_project_auto_name(mcp_tools, tmp_path):
+    """Test import generates name if not provided."""
+    # Create minimal export
+    create_result = await mcp_tools.kb_create_project(name="Test")
+    original_id = create_result["project_id"]
+
+    export_path = tmp_path / "export.json"
+    await mcp_tools.kb_export_project(
+        project_id=original_id,
+        output_path=str(export_path)
+    )
+
+    # Import without specifying name
+    import_result = await mcp_tools.kb_import_project(
+        file_path=str(export_path)
+    )
+
+    assert "error" not in import_result
+    # Should generate name from original: "Test (imported)"
+    projects = await mcp_tools.kb_list_projects()
+    imported = next(p for p in projects if p["project_id"] == import_result["project_id"])
+    assert "import" in imported["name"].lower()
