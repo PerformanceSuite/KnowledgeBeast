@@ -96,9 +96,53 @@ class PostgresBackend(VectorBackend):
 
         logger.info(f"Created schema for collection '{self.collection_name}'")
 
-    # Stub methods (to be implemented in subsequent tasks)
-    async def add_documents(self, ids, embeddings, documents, metadatas):
-        raise NotImplementedError("Task 4")
+    async def add_documents(
+        self,
+        ids: List[str],
+        embeddings: List[List[float]],
+        documents: List[str],
+        metadatas: List[Dict[str, Any]],
+    ) -> None:
+        """Add documents with embeddings to Postgres.
+
+        Uses INSERT ... ON CONFLICT DO UPDATE for upsert behavior.
+
+        Args:
+            ids: Document IDs
+            embeddings: Embedding vectors
+            documents: Document text content
+            metadatas: Document metadata (stored as JSONB)
+
+        Raises:
+            ValueError: If input lists have mismatched lengths
+            RuntimeError: If backend not initialized
+        """
+        if not self._initialized:
+            raise RuntimeError("Backend not initialized. Call initialize() first.")
+
+        if not (len(ids) == len(embeddings) == len(documents) == len(metadatas)):
+            raise ValueError("All input lists must have the same length")
+
+        # Prepare data for bulk insert
+        records = [
+            (doc_id, embedding, document, metadata)
+            for doc_id, embedding, document, metadata in zip(ids, embeddings, documents, metadatas)
+        ]
+
+        # Upsert SQL (insert or update on conflict)
+        sql = f"""
+            INSERT INTO {self.collection_name}_documents (id, embedding, document, metadata)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (id) DO UPDATE SET
+                embedding = EXCLUDED.embedding,
+                document = EXCLUDED.document,
+                metadata = EXCLUDED.metadata
+        """
+
+        async with self.pool.acquire() as conn:
+            await conn.executemany(sql, records)
+
+        logger.debug(f"Added {len(ids)} documents to '{self.collection_name}'")
 
     async def query_vector(self, query_embedding, top_k=10, where=None):
         raise NotImplementedError("Task 5")

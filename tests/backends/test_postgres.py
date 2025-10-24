@@ -43,3 +43,39 @@ async def test_postgres_backend_initialization():
         assert backend.embedding_dimension == 384
 
         await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_postgres_add_documents():
+    """PostgresBackend should add documents to database."""
+    with patch('knowledgebeast.backends.postgres.asyncpg') as mock_asyncpg:
+        mock_pool = AsyncMock()
+        mock_conn = AsyncMock()
+        mock_pool.acquire = MagicMock(return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=mock_conn),
+            __aexit__=AsyncMock()
+        ))
+        mock_asyncpg.create_pool = AsyncMock(return_value=mock_pool)
+
+        backend = PostgresBackend(
+            connection_string="postgresql://test:test@localhost/test",
+            collection_name="test"
+        )
+        await backend.initialize()
+
+        # Add documents
+        await backend.add_documents(
+            ids=["doc1", "doc2"],
+            embeddings=[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]],
+            documents=["Hello world", "Goodbye world"],
+            metadatas=[{"source": "test"}, {"source": "prod"}]
+        )
+
+        # Verify executemany called with correct SQL
+        assert mock_conn.executemany.called
+        call_args = mock_conn.executemany.call_args
+        sql = call_args[0][0]
+        assert "INSERT INTO test_documents" in sql
+        assert "ON CONFLICT (id) DO UPDATE" in sql
+
+        await backend.close()
