@@ -424,6 +424,66 @@ def mock_knowledgebeast_tools(mock_project_manager, mock_embedding_engine, mock_
 
         return results
 
+    async def kb_export_project(project_id, output_path, format="json"):
+        """Mock export project functionality."""
+        import json
+        from pathlib import Path
+
+        project = mock_project_manager.get_project(project_id)
+        if not project:
+            return {"error": f"Project not found: {project_id}"}
+
+        # Get all documents from mock vector store
+        collection_data = mock_vector_store.get(include=["documents", "metadatas", "embeddings"])
+
+        # Build export data
+        export_data = {
+            "version": "1.0",
+            "exported_at": "2025-10-24T00:00:00",
+            "project": {
+                "project_id": project.project_id,
+                "name": project.name,
+                "description": project.description,
+                "embedding_model": project.embedding_model,
+                "collection_name": project.collection_name,
+                "created_at": project.created_at,
+                "metadata": project.metadata,
+            },
+            "documents": [],
+            "embeddings": []
+        }
+
+        # Add documents and embeddings
+        if collection_data["ids"]:
+            for i, doc_id in enumerate(collection_data["ids"]):
+                export_data["documents"].append({
+                    "id": doc_id,
+                    "content": collection_data["documents"][i] if collection_data["documents"] else "",
+                    "metadata": collection_data["metadatas"][i] if collection_data["metadatas"] else {}
+                })
+
+                if collection_data["embeddings"]:
+                    export_data["embeddings"].append({
+                        "id": doc_id,
+                        "vector": collection_data["embeddings"][i]
+                    })
+
+        # Write to file
+        output_file = Path(output_path)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+
+        if format == "json":
+            with open(output_file, 'w') as f:
+                json.dump(export_data, f, indent=2)
+
+        return {
+            "project_id": project_id,
+            "file_path": str(output_file),
+            "format": format,
+            "document_count": len(export_data["documents"]),
+            "file_size_bytes": output_file.stat().st_size
+        }
+
     # Attach methods to mock
     tools.kb_create_project = kb_create_project
     tools.kb_list_projects = kb_list_projects
@@ -432,6 +492,7 @@ def mock_knowledgebeast_tools(mock_project_manager, mock_embedding_engine, mock_
     tools.kb_ingest = kb_ingest
     tools.kb_list_documents = kb_list_documents
     tools.kb_search = kb_search
+    tools.kb_export_project = kb_export_project
 
     return tools
 

@@ -3,6 +3,7 @@
 import json
 import logging
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -790,3 +791,90 @@ class KnowledgeBeastTools:
                 "project_id": project_id,
                 "doc_id": doc_id,
             }
+
+    async def kb_export_project(
+        self,
+        project_id: str,
+        output_path: str,
+        format: str = "json"
+    ) -> Dict[str, Any]:
+        """Export a project to a file.
+
+        Args:
+            project_id: Project identifier
+            output_path: Path where export file will be saved
+            format: Export format (json or yaml)
+
+        Returns:
+            Export result with statistics
+        """
+        try:
+            # Validate format
+            if format not in ["json", "yaml"]:
+                return {"error": f"Unsupported format: {format}. Use 'json' or 'yaml'."}
+
+            # Get project
+            project = self.project_manager.get_project(project_id)
+            if not project:
+                return {"error": f"Project not found: {project_id}"}
+
+            # Get project documents from ChromaDB
+            vector_store = VectorStore(
+                persist_directory=self.config.chroma_path,
+                collection_name=project.collection_name
+            )
+
+            # Query all documents from collection
+            collection_data = vector_store.collection.get(
+                include=["documents", "metadatas", "embeddings"]
+            )
+
+            # Build export data structure
+            export_data = {
+                "version": "1.0",
+                "exported_at": datetime.utcnow().isoformat(),
+                "project": project.to_dict(),
+                "documents": [],
+                "embeddings": []
+            }
+
+            # Add documents and embeddings
+            if collection_data["ids"]:
+                for i, doc_id in enumerate(collection_data["ids"]):
+                    export_data["documents"].append({
+                        "id": doc_id,
+                        "content": collection_data["documents"][i] if collection_data["documents"] else "",
+                        "metadata": collection_data["metadatas"][i] if collection_data["metadatas"] else {}
+                    })
+
+                    if collection_data["embeddings"]:
+                        export_data["embeddings"].append({
+                            "id": doc_id,
+                            "vector": collection_data["embeddings"][i]
+                        })
+
+            # Write to file
+            output_file = Path(output_path)
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+
+            if format == "json":
+                with open(output_file, 'w') as f:
+                    json.dump(export_data, f, indent=2)
+            elif format == "yaml":
+                import yaml
+                with open(output_file, 'w') as f:
+                    yaml.safe_dump(export_data, f)
+
+            logger.info(f"Exported project {project_id}: {len(export_data['documents'])} documents")
+
+            return {
+                "project_id": project_id,
+                "file_path": str(output_file),
+                "format": format,
+                "document_count": len(export_data["documents"]),
+                "file_size_bytes": output_file.stat().st_size
+            }
+
+        except Exception as e:
+            logger.error(f"Export error: {e}", exc_info=True)
+            return {"error": str(e)}

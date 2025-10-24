@@ -267,6 +267,28 @@ def create_server(config: MCPConfig) -> FastMCP:
         }
 
     @mcp.tool()
+    async def kb_export_project(
+        project_id: str, output_path: str, format: str = "json"
+    ) -> Dict[str, Any]:
+        """Export a project to a file.
+
+        Export project configuration and documents for backup or transfer.
+
+        Args:
+            project_id: Project identifier
+            output_path: Path where export file will be saved
+            format: Export format - "json" or "yaml" (default: json)
+
+        Returns:
+            Export result with file path and statistics
+        """
+        return await tools.kb_export_project(
+            project_id=project_id,
+            output_path=output_path,
+            format=format
+        )
+
+    @mcp.tool()
     async def kb_health_check() -> Dict[str, Any]:
         """Perform a health check on the KnowledgeBeast system.
 
