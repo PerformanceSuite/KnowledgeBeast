@@ -348,6 +348,40 @@ Claude: [Uses kb_search tool with hybrid mode]
         3. JWT Token Best Practices (score: 0.78)
 ```
 
+**Export/Import Projects:**
+```
+User: "Export my api-docs project to a backup file"
+Claude: [Uses kb_export_project tool]
+        Project exported successfully:
+        - File: /backups/api-docs-2025-10-24.json
+        - Documents: 15
+        - Size: 2.4 MB
+
+User: "Export as ZIP for easier transfer"
+Claude: [Uses kb_export_project tool with format="zip"]
+        Project exported as ZIP:
+        - File: /backups/api-docs-2025-10-24.zip
+        - Documents: 15
+        - Compressed size: 428 KB (82% compression)
+
+User: "Import that backup as a new project called 'api-docs-restored'"
+Claude: [Uses kb_import_project tool]
+        Project imported successfully:
+        - New Project ID: proj_def456
+        - Name: api-docs-restored
+        - Documents restored: 15
+        - All embeddings preserved
+```
+
+### Export/Import Features
+
+- **Multiple Formats**: Export to JSON, YAML, or compressed ZIP
+- **Complete Fidelity**: Preserves all documents, embeddings, and metadata
+- **Project Transfer**: Move projects between KnowledgeBeast instances
+- **Backup & Recovery**: Create snapshots for disaster recovery
+- **Version Control**: Export to JSON for tracking changes
+- **Compression**: ZIP format reduces file size by 70-90%
+
 ## Web UI
 
 Start the server:
