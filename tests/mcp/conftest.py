@@ -424,6 +424,159 @@ def mock_knowledgebeast_tools(mock_project_manager, mock_embedding_engine, mock_
 
         return results
 
+    async def kb_export_project(project_id, output_path, format="json"):
+        """Mock export project functionality."""
+        import json
+        import zipfile
+        from pathlib import Path
+
+        project = mock_project_manager.get_project(project_id)
+        if not project:
+            return {"error": f"Project not found: {project_id}"}
+
+        # Get all documents from mock vector store
+        collection_data = mock_vector_store.get(include=["documents", "metadatas", "embeddings"])
+
+        # Build export data
+        export_data = {
+            "version": "1.0",
+            "exported_at": "2025-10-24T00:00:00",
+            "project": {
+                "project_id": project.project_id,
+                "name": project.name,
+                "description": project.description,
+                "embedding_model": project.embedding_model,
+                "collection_name": project.collection_name,
+                "created_at": project.created_at,
+                "metadata": project.metadata,
+            },
+            "documents": [],
+            "embeddings": []
+        }
+
+        # Add documents and embeddings
+        if collection_data["ids"]:
+            for i, doc_id in enumerate(collection_data["ids"]):
+                export_data["documents"].append({
+                    "id": doc_id,
+                    "content": collection_data["documents"][i] if collection_data["documents"] else "",
+                    "metadata": collection_data["metadatas"][i] if collection_data["metadatas"] else {}
+                })
+
+                if collection_data["embeddings"]:
+                    export_data["embeddings"].append({
+                        "id": doc_id,
+                        "vector": collection_data["embeddings"][i]
+                    })
+
+        # Write to file
+        output_file = Path(output_path)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+
+        if format == "zip":
+            # Create ZIP with JSON inside
+            with zipfile.ZipFile(output_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("project.json", json.dumps(export_data, indent=2))
+        elif format == "json":
+            with open(output_file, 'w') as f:
+                json.dump(export_data, f, indent=2)
+
+        return {
+            "project_id": project_id,
+            "file_path": str(output_file),
+            "format": format,
+            "document_count": len(export_data["documents"]),
+            "file_size_bytes": output_file.stat().st_size
+        }
+
+    async def kb_import_project(file_path, project_name=None):
+        """Mock import project functionality."""
+        import json
+        import zipfile
+        from pathlib import Path
+
+        # Check file exists
+        import_file = Path(file_path)
+        if not import_file.exists():
+            return {"error": f"File not found: {file_path}"}
+
+        # Determine format
+        format_type = "zip" if import_file.suffix == ".zip" else "json"
+
+        # Load export data
+        try:
+            if format_type == "zip":
+                with zipfile.ZipFile(import_file, 'r') as zf:
+                    export_data = json.loads(zf.read("project.json"))
+            else:
+                with open(import_file) as f:
+                    export_data = json.load(f)
+        except (json.JSONDecodeError, zipfile.BadZipFile) as e:
+            return {"error": f"Invalid {format_type.upper()} file: {str(e)}"}
+
+        # Validate structure
+        required_keys = ["version", "project", "documents", "embeddings"]
+        if not all(key in export_data for key in required_keys):
+            return {"error": "Invalid export file structure"}
+
+        # Get original project data
+        original_project = export_data["project"]
+
+        # Generate project name
+        if not project_name:
+            project_name = f"{original_project['name']} (imported)"
+
+        # Create new project
+        new_project = mock_project_manager.create_project(
+            name=project_name,
+            description=original_project.get("description", ""),
+            embedding_model=original_project.get("embedding_model", "all-MiniLM-L6-v2"),
+            metadata={
+                **original_project.get("metadata", {}),
+                "imported_from": original_project["project_id"],
+                "imported_at": "2025-10-24T00:00:00"
+            }
+        )
+
+        # Import documents and embeddings
+        doc_count = 0
+        if export_data["documents"]:
+            ids = []
+            documents = []
+            metadatas = []
+            embeddings = []
+
+            for doc in export_data["documents"]:
+                ids.append(doc["id"])
+                documents.append(doc["content"])
+                metadatas.append(doc.get("metadata", {}))
+
+            # Get embeddings
+            embedding_map = {e["id"]: e["vector"] for e in export_data["embeddings"]}
+            for doc_id in ids:
+                if doc_id in embedding_map:
+                    embeddings.append(embedding_map[doc_id])
+                else:
+                    embeddings.append(MOCK_EMBEDDING)
+
+            # Add to mock vector store
+            mock_vector_store.add(
+                ids=ids,
+                embeddings=embeddings,
+                documents=documents,
+                metadatas=metadatas
+            )
+
+            doc_count = len(ids)
+
+        return {
+            "project_id": new_project.project_id,
+            "name": new_project.name,
+            "document_count": doc_count,
+            "source_file": file_path,
+            "original_project_id": original_project["project_id"]
+        }
+
     # Attach methods to mock
     tools.kb_create_project = kb_create_project
     tools.kb_list_projects = kb_list_projects
@@ -432,6 +585,8 @@ def mock_knowledgebeast_tools(mock_project_manager, mock_embedding_engine, mock_
     tools.kb_ingest = kb_ingest
     tools.kb_list_documents = kb_list_documents
     tools.kb_search = kb_search
+    tools.kb_export_project = kb_export_project
+    tools.kb_import_project = kb_import_project
 
     return tools
 

@@ -188,52 +188,6 @@ def create_server(config: MCPConfig) -> FastMCP:
         """
         return await tools.kb_delete_project(project_id=project_id)
 
-    # ===== Import/Export Tools =====
-
-    @mcp.tool()
-    async def kb_export_project(
-        project_id: str, output_path: str, format: str = "json"
-    ) -> Dict[str, Any]:
-        """Export a project to a file.
-
-        Export project configuration and documents for backup or transfer.
-
-        Args:
-            project_id: Project identifier
-            output_path: Path where export file will be saved
-            format: Export format - "json" or "yaml" (default: json)
-
-        Returns:
-            Export result with file path and statistics
-        """
-        # TODO: Implement export functionality
-        return {
-            "error": "Export functionality not yet implemented",
-            "project_id": project_id,
-            "output_path": output_path,
-        }
-
-    @mcp.tool()
-    async def kb_import_project(
-        file_path: str, project_name: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """Import a project from a file.
-
-        Import a previously exported project or load from a template.
-
-        Args:
-            file_path: Path to import file (JSON or YAML)
-            project_name: Optional name for imported project (generates if not provided)
-
-        Returns:
-            Import result with new project ID and statistics
-        """
-        # TODO: Implement import functionality
-        return {
-            "error": "Import functionality not yet implemented",
-            "file_path": file_path,
-        }
-
     # ===== Analytics Tools =====
 
     @mcp.tool()
@@ -265,6 +219,48 @@ def create_server(config: MCPConfig) -> FastMCP:
             "created_at": project_info.get("created_at", ""),
             "updated_at": project_info.get("updated_at", ""),
         }
+
+    @mcp.tool()
+    async def kb_export_project(
+        project_id: str, output_path: str, format: str = "zip"
+    ) -> Dict[str, Any]:
+        """Export a project to a file.
+
+        Export project configuration and documents for backup or transfer.
+
+        Args:
+            project_id: Project identifier
+            output_path: Path where export file will be saved
+            format: Export format - "json", "yaml", or "zip" (default: zip)
+
+        Returns:
+            Export result with file path and statistics
+        """
+        return await tools.kb_export_project(
+            project_id=project_id,
+            output_path=output_path,
+            format=format
+        )
+
+    @mcp.tool()
+    async def kb_import_project(
+        file_path: str, project_name: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Import a project from a file.
+
+        Import a previously exported project or load from a template.
+
+        Args:
+            file_path: Path to import file (JSON or YAML)
+            project_name: Optional name for imported project (generates if not provided)
+
+        Returns:
+            Import result with new project ID and statistics
+        """
+        return await tools.kb_import_project(
+            file_path=file_path,
+            project_name=project_name
+        )
 
     @mcp.tool()
     async def kb_health_check() -> Dict[str, Any]:
@@ -308,7 +304,7 @@ def create_server(config: MCPConfig) -> FastMCP:
 
     logger.info(
         f"MCP server created: {config.server_name} v{config.server_version} "
-        f"(12 tools registered)"
+        f"(14 tools registered)"
     )
 
     return mcp
