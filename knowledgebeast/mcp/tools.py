@@ -439,14 +439,14 @@ class KnowledgeBeastTools:
     # ===== Advanced Tools =====
 
     async def kb_export_project(
-        self, project_id: str, output_path: str, format: str = "json"
+        self, project_id: str, output_path: str, format: str = "zip"
     ) -> Dict[str, Any]:
         """Export project to file with embeddings.
 
         Args:
             project_id: Project identifier
             output_path: Path to output file
-            format: Export format - "json", "yaml", or "zip" (default: json)
+            format: Export format - "json", "yaml", or "zip" (default: zip)
 
         Returns:
             Export result with file path and status

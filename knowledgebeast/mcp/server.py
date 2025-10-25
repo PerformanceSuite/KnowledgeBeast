@@ -222,7 +222,7 @@ def create_server(config: MCPConfig) -> FastMCP:
 
     @mcp.tool()
     async def kb_export_project(
-        project_id: str, output_path: str, format: str = "json"
+        project_id: str, output_path: str, format: str = "zip"
     ) -> Dict[str, Any]:
         """Export a project to a file.
 
@@ -231,7 +231,7 @@ def create_server(config: MCPConfig) -> FastMCP:
         Args:
             project_id: Project identifier
             output_path: Path where export file will be saved
-            format: Export format - "json" or "yaml" (default: json)
+            format: Export format - "json", "yaml", or "zip" (default: zip)
 
         Returns:
             Export result with file path and statistics
