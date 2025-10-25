@@ -4,7 +4,7 @@ import json
 import logging
 import time
 import zipfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -439,18 +439,26 @@ class KnowledgeBeastTools:
     # ===== Advanced Tools =====
 
     async def kb_export_project(
-        self, project_id: str, output_path: str
+        self, project_id: str, output_path: str, format: str = "json"
     ) -> Dict[str, Any]:
-        """Export project to ZIP archive with embeddings.
+        """Export project to file with embeddings.
 
         Args:
             project_id: Project identifier
-            output_path: Path to output ZIP file
+            output_path: Path to output file
+            format: Export format - "json", "yaml", or "zip" (default: json)
 
         Returns:
             Export result with file path and status
         """
         try:
+            # Validate format
+            if format not in ["json", "yaml", "zip"]:
+                return {
+                    "error": f"Unsupported format: {format}. Use 'json', 'yaml', or 'zip'.",
+                    "error_type": "ValidationError"
+                }
+
             # Validate inputs
             try:
                 project_id = self.validator.validate_project_id(project_id)
@@ -469,18 +477,84 @@ class KnowledgeBeastTools:
                     "error_type": "ProjectNotFound",
                 }
 
-            # Export project
-            export_path = self.project_manager.export_project(
-                project_id, str(output_path_obj)
+            # For ZIP format, use project_manager's built-in export
+            if format == "zip":
+                export_path = self.project_manager.export_project(
+                    project_id, str(output_path_obj)
+                )
+                logger.info(f"Project exported: {project_id} -> {export_path}")
+
+                return {
+                    "success": True,
+                    "project_id": project_id,
+                    "project_name": project.name,
+                    "output_path": str(Path(export_path).absolute()),
+                    "format": format,
+                    "message": "Project exported successfully",
+                }
+
+            # For JSON/YAML, export directly
+            logger.info(f"Exporting project {project_id} to {format}...")
+
+            # Get project collection
+            collection = self.project_manager.get_project_collection(project_id)
+            if not collection:
+                return {
+                    "error": f"Failed to get collection for project: {project_id}",
+                    "error_type": "ExportError"
+                }
+
+            # Get all data from ChromaDB
+            collection_data = collection.get(
+                include=["documents", "metadatas", "embeddings"]
             )
 
-            logger.info(f"Project exported: {project_id} -> {export_path}")
+            # Build export data
+            export_data = {
+                "version": "1.0",
+                "exported_at": datetime.now(timezone.utc).isoformat(),
+                "project": project.to_dict(),
+                "documents": [],
+                "embeddings": []
+            }
+
+            # Add documents and embeddings
+            if collection_data.get("ids"):
+                for i, doc_id in enumerate(collection_data["ids"]):
+                    export_data["documents"].append({
+                        "id": doc_id,
+                        "content": collection_data["documents"][i] if collection_data.get("documents") else "",
+                        "metadata": collection_data["metadatas"][i] if collection_data.get("metadatas") else {}
+                    })
+
+                    if collection_data.get("embeddings"):
+                        export_data["embeddings"].append({
+                            "id": doc_id,
+                            "vector": collection_data["embeddings"][i]
+                        })
+
+            # Write to file
+            output_file = Path(output_path_obj)
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+
+            if format == "json":
+                with open(output_file, 'w') as f:
+                    json.dump(export_data, f, indent=2)
+            elif format == "yaml":
+                import yaml
+                with open(output_file, 'w') as f:
+                    yaml.safe_dump(export_data, f)
+
+            logger.info(f"Export complete: {output_file.stat().st_size} bytes")
 
             return {
                 "success": True,
                 "project_id": project_id,
                 "project_name": project.name,
-                "output_path": str(Path(export_path).absolute()),
+                "output_path": str(output_file.absolute()),
+                "format": format,
+                "document_count": len(export_data["documents"]),
+                "file_size_bytes": output_file.stat().st_size,
                 "message": "Project exported successfully",
             }
 
@@ -500,16 +574,14 @@ class KnowledgeBeastTools:
 
     async def kb_import_project(
         self,
-        zip_path: str,
-        new_project_name: Optional[str] = None,
-        conflict_resolution: str = "skip",
+        file_path: str,
+        project_name: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Import project from ZIP archive.
+        """Import project from export file.
 
         Args:
-            zip_path: Path to ZIP export file
-            new_project_name: Optional new name for imported project
-            conflict_resolution: How to handle conflicts (skip, overwrite)
+            file_path: Path to export file (JSON, YAML, or ZIP)
+            project_name: Optional new name for imported project
 
         Returns:
             Import result with project_id and status
@@ -517,45 +589,149 @@ class KnowledgeBeastTools:
         try:
             # Validate inputs
             try:
-                zip_path_obj = self.validator.validate_file_path(
-                    zip_path, "zip_path", must_exist=True, allowed_extensions=[".zip"]
+                file_path_obj = self.validator.validate_file_path(
+                    file_path, "file_path", must_exist=True,
+                    allowed_extensions=[".json", ".yaml", ".yml", ".zip"]
                 )
-                if new_project_name:
-                    new_project_name = self.validator.validate_string(
-                        new_project_name,
-                        "new_project_name",
+                if project_name:
+                    project_name = self.validator.validate_string(
+                        project_name,
+                        "project_name",
                         required=False,
                         min_length=1,
                         max_length=255,
                     )
-                conflict_resolution = self.validator.validate_choice(
-                    conflict_resolution,
-                    "conflict_resolution",
-                    choices=["skip", "overwrite"],
-                )
             except ValidationError as e:
                 logger.warning(f"Import validation error: {e.message}")
                 return e.to_dict()
 
-            # Import project
-            overwrite = conflict_resolution == "overwrite"
-            project_id = self.project_manager.import_project(
-                str(zip_path_obj), new_project_name=new_project_name, overwrite=overwrite
+            # Determine format from extension
+            file_ext = file_path_obj.suffix.lower()
+
+            # For ZIP format, use project_manager's built-in import
+            if file_ext == ".zip":
+                project_id = self.project_manager.import_project(
+                    str(file_path_obj), new_project_name=project_name
+                )
+
+                # Get imported project details
+                project = self.project_manager.get_project(project_id)
+
+                logger.info(f"Project imported: {project_id} from {file_path}")
+
+                return {
+                    "success": True,
+                    "project_id": project_id,
+                    "project_name": project.name if project else None,
+                    "file_path": str(file_path_obj.absolute()),
+                    "message": "Project imported successfully",
+                }
+
+            # For JSON/YAML, import directly
+            logger.info(f"Importing from: {file_path}")
+
+            # Load export data
+            try:
+                if file_ext == ".json":
+                    with open(file_path_obj) as f:
+                        export_data = json.load(f)
+                else:  # .yaml or .yml
+                    import yaml
+                    with open(file_path_obj) as f:
+                        export_data = yaml.safe_load(f)
+            except (json.JSONDecodeError, Exception) as e:
+                return {
+                    "error": f"Invalid file format: {str(e)}",
+                    "error_type": "ValidationError"
+                }
+
+            # Validate export data structure
+            required_keys = ["version", "project", "documents", "embeddings"]
+            if not all(key in export_data for key in required_keys):
+                return {
+                    "error": "Invalid export file structure",
+                    "error_type": "ValidationError"
+                }
+
+            # Get original project data
+            original_project = export_data["project"]
+
+            # Generate new project name if not provided
+            if not project_name:
+                project_name = f"{original_project['name']} (imported)"
+
+            logger.info(f"Creating new project: {project_name}")
+
+            # Create new project
+            new_project = self.project_manager.create_project(
+                name=project_name,
+                description=original_project.get("description", ""),
+                embedding_model=original_project.get("embedding_model", "all-MiniLM-L6-v2"),
+                metadata={
+                    **original_project.get("metadata", {}),
+                    "imported_from": original_project["project_id"],
+                    "imported_at": datetime.now(timezone.utc).isoformat()
+                }
             )
 
-            # Get imported project details
-            project = self.project_manager.get_project(project_id)
+            # Get collection for new project
+            collection = self.project_manager.get_project_collection(new_project.project_id)
+            if not collection:
+                return {
+                    "error": "Failed to create collection for imported project",
+                    "error_type": "ImportError"
+                }
 
-            logger.info(
-                f"Project imported: {project_id} from {zip_path} "
-                f"(name: {project.name if project else 'unknown'})"
+            # Get embedding engine
+            embedding_engine = EmbeddingEngine(
+                model_name=new_project.embedding_model,
+                cache_size=self.config.cache_capacity
             )
+
+            # Import documents and embeddings
+            doc_count = 0
+            if export_data.get("documents"):
+                ids = []
+                documents = []
+                metadatas = []
+                embeddings = []
+
+                # Build parallel arrays for ChromaDB
+                for doc in export_data["documents"]:
+                    ids.append(doc["id"])
+                    documents.append(doc.get("content", ""))
+                    metadatas.append(doc.get("metadata", {}))
+
+                # Get embeddings (use existing if available, otherwise regenerate)
+                embedding_map = {e["id"]: e["vector"] for e in export_data.get("embeddings", [])}
+                for doc_id in ids:
+                    if doc_id in embedding_map:
+                        embeddings.append(embedding_map[doc_id])
+                    else:
+                        # Regenerate embedding for this document
+                        idx = ids.index(doc_id)
+                        vec = embedding_engine.embed(documents[idx])
+                        embeddings.append(vec.tolist())
+
+                # Add to collection
+                collection.add(
+                    ids=ids,
+                    documents=documents,
+                    metadatas=metadatas,
+                    embeddings=embeddings
+                )
+
+                doc_count = len(ids)
+
+            logger.info(f"Import complete: {new_project.project_id} ({doc_count} documents)")
 
             return {
                 "success": True,
-                "project_id": project_id,
-                "project_name": project.name if project else None,
-                "zip_path": str(zip_path_obj.absolute()),
+                "project_id": new_project.project_id,
+                "project_name": new_project.name,
+                "document_count": doc_count,
+                "file_path": str(file_path_obj.absolute()),
+                "original_project_id": original_project["project_id"],
                 "message": "Project imported successfully",
             }
 
@@ -793,233 +969,3 @@ class KnowledgeBeastTools:
                 "doc_id": doc_id,
             }
 
-    async def kb_export_project(
-        self,
-        project_id: str,
-        output_path: str,
-        format: str = "json"
-    ) -> Dict[str, Any]:
-        """Export a project to a file.
-
-        Args:
-            project_id: Project identifier
-            output_path: Path where export file will be saved
-            format: Export format (json or yaml)
-
-        Returns:
-            Export result with statistics
-        """
-        try:
-            # Validate format
-            if format not in ["json", "yaml", "zip"]:
-                return {"error": f"Unsupported format: {format}. Use 'json', 'yaml', or 'zip'."}
-
-            # Get project
-            project = self.project_manager.get_project(project_id)
-            if not project:
-                return {"error": f"Project not found: {project_id}"}
-
-            logger.info(f"Exporting project {project_id}...")
-
-            # Get project documents from ChromaDB
-            vector_store = VectorStore(
-                persist_directory=self.config.chroma_path,
-                collection_name=project.collection_name
-            )
-
-            # Query all documents from collection
-            collection_data = vector_store.collection.get(
-                include=["documents", "metadatas", "embeddings"]
-            )
-
-            logger.info(f"Fetching {len(collection_data.get('ids', []))} documents from ChromaDB...")
-
-            # Build export data structure
-            export_data = {
-                "version": "1.0",
-                "exported_at": datetime.utcnow().isoformat(),
-                "project": project.to_dict(),
-                "documents": [],
-                "embeddings": []
-            }
-
-            # Add documents and embeddings
-            if collection_data["ids"]:
-                for i, doc_id in enumerate(collection_data["ids"]):
-                    export_data["documents"].append({
-                        "id": doc_id,
-                        "content": collection_data["documents"][i] if collection_data["documents"] else "",
-                        "metadata": collection_data["metadatas"][i] if collection_data["metadatas"] else {}
-                    })
-
-                    if collection_data["embeddings"]:
-                        export_data["embeddings"].append({
-                            "id": doc_id,
-                            "vector": collection_data["embeddings"][i]
-                        })
-
-            # Write to file
-            output_file = Path(output_path)
-            output_file.parent.mkdir(parents=True, exist_ok=True)
-
-            logger.info(f"Writing export file: {output_file}")
-
-            if format == "zip":
-                # Create ZIP with JSON inside
-                with zipfile.ZipFile(output_file, 'w', zipfile.ZIP_DEFLATED) as zf:
-                    # Write project data
-                    zf.writestr("project.json", json.dumps(export_data, indent=2))
-            elif format == "json":
-                with open(output_file, 'w') as f:
-                    json.dump(export_data, f, indent=2)
-            elif format == "yaml":
-                import yaml
-                with open(output_file, 'w') as f:
-                    yaml.safe_dump(export_data, f)
-
-            logger.info(f"Export complete: {output_file.stat().st_size} bytes")
-            logger.info(f"Exported project {project_id}: {len(export_data['documents'])} documents")
-
-            return {
-                "project_id": project_id,
-                "file_path": str(output_file),
-                "format": format,
-                "document_count": len(export_data["documents"]),
-                "file_size_bytes": output_file.stat().st_size
-            }
-
-        except Exception as e:
-            logger.error(f"Export error: {e}", exc_info=True)
-            return {"error": str(e)}
-
-    async def kb_import_project(
-        self,
-        file_path: str,
-        project_name: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """Import a project from an exported file.
-
-        Args:
-            file_path: Path to export file (JSON or YAML)
-            project_name: Optional name for imported project
-
-        Returns:
-            Import result with new project ID and statistics
-        """
-        try:
-            # Check file exists
-            import_file = Path(file_path)
-            if not import_file.exists():
-                return {"error": f"File not found: {file_path}"}
-
-            logger.info(f"Importing from: {file_path}")
-
-            # Determine format from extension
-            format_type = "zip" if import_file.suffix == ".zip" else (
-                "json" if import_file.suffix == ".json" else "yaml"
-            )
-
-            # Load export data
-            try:
-                if format_type == "zip":
-                    with zipfile.ZipFile(import_file, 'r') as zf:
-                        # Read project.json from ZIP
-                        export_data = json.loads(zf.read("project.json"))
-                elif format_type == "json":
-                    with open(import_file) as f:
-                        export_data = json.load(f)
-                else:
-                    import yaml
-                    with open(import_file) as f:
-                        export_data = yaml.safe_load(f)
-            except (json.JSONDecodeError, yaml.YAMLError, zipfile.BadZipFile) as e:
-                return {"error": f"Invalid {format_type.upper()} file: {str(e)}"}
-
-            # Validate export data structure
-            required_keys = ["version", "project", "documents", "embeddings"]
-            if not all(key in export_data for key in required_keys):
-                return {"error": "Invalid export file structure"}
-
-            # Get original project data
-            original_project = export_data["project"]
-
-            # Generate new project name if not provided
-            if not project_name:
-                project_name = f"{original_project['name']} (imported)"
-
-            logger.info(f"Creating new project: {project_name}")
-
-            # Create new project
-            new_project = self.project_manager.create_project(
-                name=project_name,
-                description=original_project.get("description", ""),
-                embedding_model=original_project.get("embedding_model", "all-MiniLM-L6-v2"),
-                metadata={
-                    **original_project.get("metadata", {}),
-                    "imported_from": original_project["project_id"],
-                    "imported_at": datetime.utcnow().isoformat()
-                }
-            )
-
-            logger.info(f"Importing {len(export_data['documents'])} documents...")
-
-            # Get vector store for new project
-            vector_store = VectorStore(
-                persist_directory=self.config.chroma_path,
-                collection_name=new_project.collection_name
-            )
-
-            embedding_engine = EmbeddingEngine(
-                model_name=new_project.embedding_model,
-                cache_size=self.config.cache_capacity
-            )
-
-            # Import documents and embeddings
-            doc_count = 0
-            if export_data["documents"]:
-                ids = []
-                documents = []
-                metadatas = []
-                embeddings = []
-
-                # Build parallel arrays for ChromaDB
-                for doc in export_data["documents"]:
-                    ids.append(doc["id"])
-                    documents.append(doc["content"])
-                    metadatas.append(doc.get("metadata", {}))
-
-                # Get embeddings (use existing if available, otherwise regenerate)
-                embedding_map = {e["id"]: e["vector"] for e in export_data["embeddings"]}
-                for doc_id in ids:
-                    if doc_id in embedding_map:
-                        embeddings.append(embedding_map[doc_id])
-                    else:
-                        # Regenerate embedding for this document
-                        idx = ids.index(doc_id)
-                        vec = embedding_engine.embed(documents[idx])
-                        embeddings.append(vec.tolist())
-
-                # Add to collection
-                vector_store.collection.add(
-                    ids=ids,
-                    documents=documents,
-                    metadatas=metadatas,
-                    embeddings=embeddings
-                )
-
-                doc_count = len(ids)
-
-            logger.info(f"Import complete: {new_project.project_id}")
-            logger.info(f"Imported project: {new_project.project_id} ({doc_count} documents)")
-
-            return {
-                "project_id": new_project.project_id,
-                "name": new_project.name,
-                "document_count": doc_count,
-                "source_file": file_path,
-                "original_project_id": original_project["project_id"]
-            }
-
-        except Exception as e:
-            logger.error(f"Import error: {e}", exc_info=True)
-            return {"error": str(e)}
