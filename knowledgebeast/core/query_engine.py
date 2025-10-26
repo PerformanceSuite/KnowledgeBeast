@@ -188,6 +188,12 @@ class HybridQueryEngine:
         - Thread-safe operation with embedding cache
         - Lock-free query execution
 
+    v3.0 Changes:
+        - Added backend parameter for pluggable vector storage
+        - Defaults to None (backward compatible)
+        - When None, uses internal embedding cache (legacy behavior)
+        - When provided, delegates vector operations to backend
+
     Thread Safety:
         - Embedding model is thread-safe (read-only after init)
         - Embedding cache is thread-safe (LRUCache)
@@ -197,14 +203,16 @@ class HybridQueryEngine:
     Attributes:
         repository: Document repository for data access
         keyword_engine: QueryEngine for keyword search
+        backend: Optional VectorBackend for vector operations (v3.0+)
         model: SentenceTransformer for embeddings
-        embedding_cache: LRU cache for document embeddings
+        embedding_cache: LRU cache for document embeddings (legacy)
         alpha: Default weight for hybrid search (0-1, default 0.7)
     """
 
     def __init__(
         self,
         repository: DocumentRepository,
+        backend: Optional['VectorBackend'] = None,
         model_name: str = "all-MiniLM-L6-v2",
         alpha: float = 0.7,
         cache_size: int = 1000
@@ -213,9 +221,11 @@ class HybridQueryEngine:
 
         Args:
             repository: Document repository instance
+            backend: Optional VectorBackend instance (v3.0+)
+                     If None, uses legacy in-memory embedding cache
             model_name: Name of sentence-transformers model to use
             alpha: Default weight for vector search in hybrid mode (0-1)
-            cache_size: Size of embedding cache
+            cache_size: Size of embedding cache (legacy mode only)
 
         Raises:
             ValueError: If alpha not in [0, 1]
@@ -225,17 +235,23 @@ class HybridQueryEngine:
 
         self.repository = repository
         self.keyword_engine = QueryEngine(repository)
+        self.backend = backend
         self.alpha = alpha
 
         # Load embedding model (thread-safe after initialization)
         logger.info(f"Loading embedding model: {model_name}")
         self.model = SentenceTransformer(model_name)
 
-        # Thread-safe embedding cache
+        # Legacy mode: In-memory embedding cache (used when backend=None)
         self.embedding_cache: LRUCache[str, np.ndarray] = LRUCache(capacity=cache_size)
 
-        # Pre-compute document embeddings
-        self._precompute_embeddings()
+        # Only pre-compute embeddings if NOT using backend
+        # (backend manages its own embeddings)
+        if self.backend is None:
+            logger.info("Using legacy in-memory embedding cache (no backend)")
+            self._precompute_embeddings()
+        else:
+            logger.info(f"Using {self.backend.__class__.__name__} backend for vector operations")
 
     def refresh_embeddings(self) -> int:
         """Refresh embeddings for all documents in repository.

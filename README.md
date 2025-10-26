@@ -6,6 +6,42 @@
 
 A production-ready **Vector RAG (Retrieval-Augmented Generation)** knowledge management system combining semantic vector search with traditional keyword matching. Built for speed, reliability, and multi-tenant scalability.
 
+## What's New in v3.0 🎉
+
+### Backend Abstraction Layer
+
+KnowledgeBeast v3.0 introduces a **pluggable backend architecture**:
+
+- **ChromaDBBackend**: Legacy backend (default, backward compatible)
+- **PostgresBackend**: Production-ready with pgvector + PostgreSQL full-text search ✨
+
+```python
+from knowledgebeast import HybridQueryEngine, DocumentRepository
+from knowledgebeast.backends import ChromaDBBackend, PostgresBackend
+
+# ChromaDB backend (default)
+backend = ChromaDBBackend(persist_directory="./chroma_db")
+repo = DocumentRepository()
+engine = HybridQueryEngine(repo, backend=backend)
+
+# PostgreSQL backend (production-ready, requires asyncpg + pgvector)
+async with PostgresBackend(
+    connection_string="postgresql://user:pass@localhost/kb",
+    collection_name="my_kb"
+) as postgres_backend:
+    engine = HybridQueryEngine(repo, backend=postgres_backend)
+    results = await engine.query("search query")
+
+# Or use legacy mode (no backend, in-memory cache)
+engine = HybridQueryEngine(repo)  # Still works!
+```
+
+**PostgresBackend Requirements:**
+- PostgreSQL 15+ with `pgvector` extension
+- `asyncpg` Python package: `pip install asyncpg`
+
+See [docs/BACKENDS.md](docs/BACKENDS.md) for detailed backend documentation.
+
 ## Features
 
 ### Core Capabilities

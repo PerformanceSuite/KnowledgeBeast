@@ -553,3 +553,22 @@ class TestEdgeCases:
         assert isinstance(stats['size'], int)
         assert isinstance(stats['capacity'], int)
         assert isinstance(stats['utilization'], float)
+
+
+def test_hybrid_query_engine_accepts_backend():
+    """HybridQueryEngine should accept optional backend parameter."""
+    from knowledgebeast.backends.chromadb import ChromaDBBackend
+    from knowledgebeast.core.repository import DocumentRepository
+    from knowledgebeast.core.query_engine import HybridQueryEngine
+
+    repo = DocumentRepository()
+    backend = ChromaDBBackend(collection_name="test_backend")
+
+    # Should accept backend parameter
+    engine = HybridQueryEngine(
+        repository=repo,
+        backend=backend,
+        model_name="all-MiniLM-L6-v2"
+    )
+
+    assert engine.backend == backend
