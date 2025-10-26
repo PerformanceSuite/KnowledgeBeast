@@ -22,10 +22,23 @@ class PostgresBackend(VectorBackend):
 
     Features:
     - pgvector for vector similarity search (cosine distance)
-    - PostgreSQL full-text search for keyword search
+    - PostgreSQL full-text search for keyword search (safe with plainto_tsquery)
     - Reciprocal Rank Fusion for hybrid search
     - ACID transactions and production reliability
     - Connection pooling for concurrency
+    - Async context manager support for automatic cleanup
+
+    Usage:
+        # Manual initialization
+        backend = PostgresBackend(connection_string="postgresql://...")
+        await backend.initialize()
+        # ... use backend ...
+        await backend.close()
+
+        # Context manager (recommended)
+        async with PostgresBackend(connection_string="postgresql://...") as backend:
+            # Automatically initialized and cleaned up
+            results = await backend.query_vector(embedding)
     """
 
     def __init__(
@@ -79,6 +92,25 @@ class PostgresBackend(VectorBackend):
             f"Initialized PostgresBackend: collection='{self.collection_name}', "
             f"dimension={self.embedding_dimension}"
         )
+
+    def _build_where_clause(
+        self,
+        where: Optional[Dict[str, Any]],
+        param_offset: int = 1,
+    ) -> Tuple[str, List[Any]]:
+        """Build WHERE clause for metadata filtering.
+
+        Args:
+            where: Metadata filter dictionary
+            param_offset: Starting parameter number for query placeholders
+
+        Returns:
+            Tuple of (where_clause_string, additional_params)
+        """
+        if not where:
+            return ("", [])
+
+        return (f"metadata @> ${param_offset}", [where])
 
     async def _create_schema(self) -> None:
         """Create database schema from SQL template."""
@@ -169,12 +201,12 @@ class PostgresBackend(VectorBackend):
             raise RuntimeError("Backend not initialized. Call initialize() first.")
 
         # Build WHERE clause for metadata filtering
-        where_clause = ""
-        params = [query_embedding, top_k]
-        if where:
-            # Simple equality filter: metadata @> '{"key": "value"}'
-            where_clause = "WHERE metadata @> $3"
-            params.append(where)
+        where_clause, where_params = self._build_where_clause(where, param_offset=3)
+        params = [query_embedding, top_k] + where_params
+
+        # Add WHERE keyword if there's a clause
+        if where_clause:
+            where_clause = f"WHERE {where_clause}"
 
         # Query with cosine distance (pgvector operator: <=>)
         sql = f"""
@@ -205,7 +237,8 @@ class PostgresBackend(VectorBackend):
     ) -> List[Tuple[str, float, Dict[str, Any]]]:
         """Perform full-text keyword search using PostgreSQL.
 
-        Uses ts_rank for relevance scoring with to_tsvector/to_tsquery.
+        Uses ts_rank for relevance scoring with plainto_tsquery for safe query handling.
+        plainto_tsquery automatically sanitizes user input and handles special characters.
 
         Args:
             query: Search query string
@@ -222,20 +255,22 @@ class PostgresBackend(VectorBackend):
             raise RuntimeError("Backend not initialized. Call initialize() first.")
 
         # Build WHERE clause for metadata filtering
-        where_clause = ""
-        params = [query, top_k]
-        if where:
-            where_clause = "AND metadata @> $3"
-            params.append(where)
+        where_clause, where_params = self._build_where_clause(where, param_offset=3)
+        params = [query, top_k] + where_params
+
+        # Add AND to where_clause if it exists (since we have a base WHERE already)
+        if where_clause:
+            where_clause = f"AND {where_clause}"
 
         # Full-text search with ts_rank
+        # Uses plainto_tsquery which is safer than to_tsquery (auto-sanitizes input)
         sql = f"""
             SELECT
                 id,
-                ts_rank(to_tsvector('english', document), to_tsquery('english', $1)) as rank,
+                ts_rank(to_tsvector('english', document), plainto_tsquery('english', $1)) as rank,
                 metadata
             FROM {self.collection_name}_documents
-            WHERE to_tsvector('english', document) @@ to_tsquery('english', $1)
+            WHERE to_tsvector('english', document) @@ plainto_tsquery('english', $1)
             {where_clause}
             ORDER BY rank DESC
             LIMIT $2
@@ -389,8 +424,38 @@ class PostgresBackend(VectorBackend):
             "backend_type": "postgres",
         }
 
-    async def get_health(self):
-        raise NotImplementedError("Task 10")
+    async def get_health(self) -> Dict[str, Any]:
+        """Check backend health and availability.
+
+        Returns:
+            Dictionary with health status and connection info
+
+        """
+        if not self._initialized or not self.pool:
+            return {
+                "status": "unhealthy",
+                "backend_available": False,
+                "error": "Backend not initialized",
+            }
+
+        try:
+            # Simple query to check database connectivity
+            async with self.pool.acquire() as conn:
+                await conn.fetchval("SELECT 1")
+
+            return {
+                "status": "healthy",
+                "backend_available": True,
+                "collection": self.collection_name,
+                "embedding_dimension": self.embedding_dimension,
+            }
+        except Exception as e:
+            logger.error(f"Health check failed: {e}")
+            return {
+                "status": "unhealthy",
+                "backend_available": False,
+                "error": str(e),
+            }
 
     async def close(self) -> None:
         """Close connection pool and cleanup resources."""
@@ -399,3 +464,13 @@ class PostgresBackend(VectorBackend):
             self.pool = None
             self._initialized = False
             logger.info(f"Closed PostgresBackend for collection '{self.collection_name}'")
+
+    async def __aenter__(self):
+        """Async context manager entry - initializes the backend."""
+        await self.initialize()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit - closes the backend."""
+        await self.close()
+        return False  # Don't suppress exceptions

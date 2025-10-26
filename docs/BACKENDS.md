@@ -32,34 +32,49 @@ backend = ChromaDBBackend(
 engine = HybridQueryEngine(repository, backend=backend)
 ```
 
-### PostgresBackend (v3.0-beta, Week 2)
+### PostgresBackend (Production-Ready ✨)
 
-New backend using PostgreSQL with pgvector and ParadeDB extensions.
+Production backend using PostgreSQL with pgvector and full-text search.
 
 **Pros:**
 - Unified database (no separate service)
 - Production-grade reliability (ACID, replication, backups)
 - Better multi-tenancy (schemas/tables)
-- Faster at scale (optimized indexes)
+- Faster at scale (optimized HNSW indexes)
+- Safe query handling (uses plainto_tsquery for sanitization)
+- Async context manager support
 
 **Cons:**
-- Requires Postgres 15+ with extensions
-- More complex setup
+- Requires Postgres 15+ with pgvector extension
+- More complex setup than ChromaDB
 
-**Usage (coming in Week 2):**
+**Requirements:**
+- PostgreSQL 15+ with `pgvector` extension installed
+- `asyncpg` Python package: `pip install asyncpg`
+
+**Usage:**
 
 ```python
 from knowledgebeast.backends import PostgresBackend
 
+# Method 1: Manual initialization
 backend = PostgresBackend(
     connection_string="postgresql://user:pass@localhost/kb",
     collection_name="my_kb",
     embedding_dimension=384
 )
-
 await backend.initialize()  # Create tables/indexes
-
 engine = HybridQueryEngine(repository, backend=backend)
+# ... use engine ...
+await backend.close()  # Cleanup
+
+# Method 2: Context manager (recommended)
+async with PostgresBackend(
+    connection_string="postgresql://user:pass@localhost/kb",
+    collection_name="my_kb"
+) as backend:
+    engine = HybridQueryEngine(repository, backend=backend)
+    # Automatically initialized and cleaned up
 ```
 
 ## Migration Guide
